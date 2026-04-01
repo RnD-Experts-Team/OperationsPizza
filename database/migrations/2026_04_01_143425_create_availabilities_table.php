@@ -20,6 +20,8 @@ return new class extends Migration
                 'sunday','monday','tuesday','wednesday','thursday','friday','saturday'
             ]);
 
+            $table->unique(['employee_id', 'day_of_week']);
+
             $table->timestamps();
         });
     }
