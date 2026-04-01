@@ -14,11 +14,16 @@ class DayOff extends Model
         'requested_at',
         'type',
         'note',
-        'acceptedStatus'
+        'acceptedStatus',
+        'accepted_by'
     ];
 
     public function employee()
     {
         return $this->belongsTo(Employee::class);
+    }
+    public function acceptedBy()
+    {
+        return $this->belongsTo(User::class, 'accepted_by');
     }
 }

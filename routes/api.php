@@ -6,3 +6,4 @@ require __DIR__ . '/api/skills.php';
 require __DIR__ . '/api/EmployeeSkill.php';
 require __DIR__ . '/api/availabilities.php';
 require __DIR__ . '/api/availability-times.php';
+require __DIR__ . '/api/dayOff.php';

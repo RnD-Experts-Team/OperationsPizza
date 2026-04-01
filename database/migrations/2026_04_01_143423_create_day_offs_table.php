@@ -11,7 +11,7 @@ return new class extends Migration
      */
     public function up(): void
     {
-      Schema::create('days_off', function (Blueprint $table) {
+        Schema::create('days_off', function (Blueprint $table) {
             $table->id();
 
             $table->foreignId('employee_id')->constrained()->cascadeOnDelete();
@@ -24,6 +24,11 @@ return new class extends Migration
             $table->text('note')->nullable();
 
             $table->enum('acceptedStatus', ['pending', 'approved', 'rejected']);
+
+            $table->foreignId('accepted_by')
+                ->nullable()
+                ->constrained('users')
+                ->nullOnDelete();
 
             $table->timestamps();
         });
