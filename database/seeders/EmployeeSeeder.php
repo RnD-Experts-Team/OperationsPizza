@@ -49,5 +49,29 @@ class EmployeeSeeder extends Seeder
             'hire_date' => '2024-03-01',
             'status' => 'new hire',
         ]);
+         Employee::create([
+            'store_id' => $store3->id,
+            'name' => 'ss Omar',
+            'phone' => '0599000004',
+            'email' => 'lay2an@example.com',
+            'hire_date' => '2024-03-01',
+            'status' => 'new hire',
+        ]);
+         Employee::create([
+            'store_id' => $store3->id,
+            'name' => 'Laya3n Omar',
+            'phone' => '0599000004',
+            'email' => 'laya3n@example.com',
+            'hire_date' => '2024-03-01',
+            'status' => 'new hire',
+        ]);
+         Employee::create([
+            'store_id' => $store3->id,
+            'name' => 'Layan Omar',
+            'phone' => '0599000004',
+            'email' => 'laya4n@example.com',
+            'hire_date' => '2024-03-01',
+            'status' => 'new hire',
+        ]);
     }
 }

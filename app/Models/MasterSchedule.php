@@ -11,7 +11,7 @@ class MasterSchedule extends Model
     protected $table = 'master_schedule';
 
     protected $fillable = [
-        'store_id','start_date','end_date','published','created_by'
+        'store_id','start_date','end_date','published','created_by','published_by'
     ];
 
     public function store()
@@ -22,6 +22,10 @@ class MasterSchedule extends Model
     public function creator()
     {
         return $this->belongsTo(User::class, 'created_by');
+    }
+    public function publisher()
+    {
+        return $this->belongsTo(User::class, 'published_by');
     }
 
     public function schedules()

@@ -63,13 +63,7 @@ class MasterScheduleService
 
     public function updateWithSchedules(MasterSchedule $master, array $data, ?int $userId = null): MasterSchedule
     {
-        // 🔥 منع التعديل إذا published
-
-        if ($master->published) {
-            throw ValidationException::withMessages([
-                'published' => ['Cannot modify a published schedule.']
-            ]);
-        }
+         
 
         return DB::transaction(function () use ($master, $data, $userId) {
 
@@ -156,7 +150,7 @@ class MasterScheduleService
         });
     }
 
-     public function publish(MasterSchedule $master): MasterSchedule
+    public function publish(MasterSchedule $master,int $userId): MasterSchedule
     {
         // 🔴 إذا منشور مسبقًا
         if ($master->published) {
@@ -191,6 +185,7 @@ class MasterScheduleService
         // ✅ publish
         $master->update([
             'published' => true,
+            'published_by' => $userId,
         ]);
 
         return $master->fresh()->load('schedules');

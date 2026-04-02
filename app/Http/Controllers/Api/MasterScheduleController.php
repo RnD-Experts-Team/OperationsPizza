@@ -112,7 +112,7 @@ class MasterScheduleController extends Controller
         try {
             $record = $this->service->getById($id);
 
-            $published = $this->service->publish($record);
+            $published = $this->service->publish($record,auth()->id());
 
             return response()->json([
                 'success' => true,

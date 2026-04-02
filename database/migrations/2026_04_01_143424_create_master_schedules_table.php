@@ -22,6 +22,7 @@ return new class extends Migration
             $table->boolean('published')->default(false);
 
             $table->foreignId('created_by')->constrained('users')->restrictOnDelete();
+            $table->foreignId('published_by')->nullable()->constrained('users')->restrictOnDelete();
 
             $table->timestamps();
         });
