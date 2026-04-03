@@ -9,9 +9,57 @@ use Illuminate\Validation\ValidationException;
 use Carbon\Carbon;
 use App\Models\DayOff;
 use App\Models\Availability;
+use App\Models\Schedule;
+use App\Models\Skill;
 
 class MasterScheduleService
 {
+    
+
+    public function initScheduling(array $data): array
+    {
+        // published schedule
+
+        $publishedSchedule = MasterSchedule::with([
+                'schedules.employee',
+                'schedules.skill'
+            ])
+            ->where('store_id', $data['store_id'])
+            ->where('published', true)
+            ->where(function ($query) use ($data) {
+                $query->whereDate('start_date', '<=', $data['end_date'])
+                      ->whereDate('end_date', '>=', $data['start_date']);
+            })
+            ->latest('start_date')
+            ->first();
+
+        // days off
+        $daysOff = DayOff::with('employee')
+            ->whereHas('employee', function ($query) use ($data) {
+                $query->where('store_id', $data['store_id']);
+            })
+            ->whereBetween('date', [$data['start_date'], $data['end_date']])
+            ->where('acceptedStatus', 'approved')
+            ->get();
+
+        // employees + availability + times + employee skills
+        $employees = Employee::with([
+                'availability.times',
+                'skills'
+            ])
+            ->where('store_id', $data['store_id'])
+            ->get();
+
+        // all skills
+        $skills = Skill::get();
+
+        return [
+            'published_schedule' => $publishedSchedule,
+            'days_off' => $daysOff,
+            'employees' => $employees,
+            'skills' => $skills,
+        ];
+    }
     public function getAllPaginated(int $perPage = 10)
     {
         return MasterSchedule::with('schedules')
@@ -203,6 +251,21 @@ class MasterScheduleService
 
         return $master->fresh()->load('schedules');
     }
+    public function unpublish(MasterSchedule $master): MasterSchedule
+    {
+        if (!$master->published) {
+            throw ValidationException::withMessages([
+                'published' => ['This master schedule is already unpublished.'],
+            ]);
+        }
+
+        $master->update([
+            'published' => false,
+            'published_by' => null,
+        ]);
+
+        return $master->fresh()->load('schedules');
+    }
 
     public function delete(MasterSchedule $master): void
     {
@@ -245,6 +308,53 @@ class MasterScheduleService
             $master->forceDelete();
         });
     }
+    public function deleteSchedule(int $id): void
+    {
+        $schedule = Schedule::findOrFail($id);
+
+        if ($schedule->masterSchedule && $schedule->masterSchedule->published) {
+            throw ValidationException::withMessages([
+                'schedule' => ['Cannot delete schedule from a published master schedule.'],
+            ]);
+        }
+
+        if ($schedule->actual_start_time || $schedule->actual_end_time) {
+            throw ValidationException::withMessages([
+                'schedule' => ['Cannot delete a schedule that has actual time recorded.'],
+            ]);
+        }
+
+        $schedule->delete();
+    }
+    public function restoreSchedule(int $id): Schedule
+    {
+        $schedule = Schedule::withTrashed()->findOrFail($id);
+
+        // 🔴 لازم يكون محذوف
+        if (!$schedule->trashed()) {
+            throw ValidationException::withMessages([
+                'restore' => ['Schedule is not deleted.']
+            ]);
+        }
+
+        $schedule->restore();
+
+        return $schedule->fresh();
+    }
+    public function forceDeleteSchedule(int $id): void
+    {
+        $schedule = Schedule::withTrashed()->findOrFail($id);
+
+        // 🔴 لازم يكون soft deleted أولاً
+        if (!$schedule->trashed()) {
+            throw ValidationException::withMessages([
+                'force_delete' => ['You must delete the schedule first before force deleting.']
+            ]);
+        }
+
+        $schedule->forceDelete();
+    }
+    
     public function getTrashed()
     {
         return MasterSchedule::onlyTrashed()
@@ -268,6 +378,81 @@ class MasterScheduleService
 
         return $dates;
     }
+    public function copySchedule(array $data, int $userId): MasterSchedule
+    {
+        return DB::transaction(function () use ($data, $userId) {
+
+            // 🟢 1. تحديد المصدر
+            if (!empty($data['master_schedule_id'])) {
+
+                // 🔵 المستخدم اختار جدول معين
+                $source = MasterSchedule::with('schedules')
+                    ->findOrFail($data['master_schedule_id']);
+
+            } else {
+
+                // 🟡 الافتراضي = الأسبوع الماضي
+                $start = Carbon::parse($data['start_date'])->subWeek();
+                $end = Carbon::parse($data['end_date'])->subWeek();
+
+                $source = MasterSchedule::with('schedules')
+                    ->where('store_id', $data['store_id'])
+                    ->whereDate('start_date', $start)
+                    ->whereDate('end_date', $end)
+                    ->first();
+
+                if (!$source) {
+                    throw ValidationException::withMessages([
+                        'previous' => ['No previous week found.']
+                    ]);
+                }
+            }
+
+            // 🟢 2. إنشاء master جديد
+            $newMaster = MasterSchedule::create([
+                'store_id' => $data['store_id'],
+                'start_date' => $data['start_date'],
+                'end_date' => $data['end_date'],
+                'published' => false,
+                'created_by' => $userId,
+            ]);
+
+            // 🟡 3. نسخ الشفتات
+            foreach ($source->schedules as $schedule) {
+
+                $diffDays = Carbon::parse($data['start_date'])
+                    ->diffInDays(Carbon::parse($source->start_date), false);
+
+                $newDate = Carbon::parse($schedule->date)->addDays($diffDays);
+
+                $newMaster->schedules()->create([
+                    'employee_id' => $schedule->employee_id,
+                    'date' => $newDate->toDateString(),
+                    'start_time' => $schedule->start_time,
+                    'end_time' => $schedule->end_time,
+                    'actual_start_time' => null,
+                    'actual_end_time' => null,
+                    'skill_id' => $schedule->skill_id,
+                    'edited_by' => $userId,
+                ]);
+            }
+
+            return $newMaster->load('schedules');
+        });
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
     private function ensureNoMasterOverlap(
         int $storeId,
         string $startDate,

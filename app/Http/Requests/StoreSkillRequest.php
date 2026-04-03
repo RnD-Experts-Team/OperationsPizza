@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
+use App\Models\Skill;
 
 class StoreSkillRequest extends FormRequest
 {
@@ -11,19 +12,38 @@ class StoreSkillRequest extends FormRequest
         return true;
     }
 
+    protected function prepareForValidation()
+    {
+        if ($this->has('name')) {
+
+            $clean = strtolower(
+                preg_replace('/\s+/', '', trim($this->name))
+            );
+
+            $this->merge([
+                'name' => $clean
+            ]);
+        }
+    }
+
     public function rules(): array
     {
         return [
-            'name' => ['required', 'string', 'max:255', 'unique:skills,name'],
-            'description' => ['nullable', 'string'],
-        ];
-    }
+            'name' => [
+                'required',
+                'string',
+                'max:255',
+                function ($attribute, $value, $fail) {
 
-    public function messages(): array
-    {
-        return [
-            'name.required' => 'Skill name is required',
-            'name.unique' => 'Skill name is already taken',
+                    $exists = Skill::whereRaw('LOWER(REPLACE(name, " ", "")) = ?', [$value])
+                        ->exists();
+
+                    if ($exists) {
+                        $fail('Skill name is already taken.');
+                    }
+                }
+            ],
+            'description' => ['nullable', 'string'],
         ];
     }
 }
