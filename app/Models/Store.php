@@ -12,13 +12,14 @@ class Store extends Model
         return $this->hasMany(Employee::class);
     }
 
-    // public function scheduleTemplates()
-    // {
-    //     return $this->hasMany(ScheduleTemplate::class);
-    // }
+ 
 
     public function masterSchedules()
     {
         return $this->hasMany(MasterSchedule::class);
+    }
+    public function scheduleTemplateStores()
+    {
+        return $this->hasMany(ScheduleTemplateStore::class, 'store_id');
     }
 }

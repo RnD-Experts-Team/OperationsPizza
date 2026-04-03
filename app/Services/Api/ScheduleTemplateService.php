@@ -5,6 +5,7 @@ namespace App\Services\Api;
 use App\Models\ScheduleTemplate;
 use App\Models\ScheduleTemplateDetail;
 use App\Models\MasterSchedule;
+use App\Models\ScheduleTemplateStore;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
@@ -16,8 +17,7 @@ class ScheduleTemplateService
     {
         return ScheduleTemplate::with('details')->orderBy('id', 'asc')->get();
     }
-
-    public function saveGeneralTemplate(array $data, int $userId): ScheduleTemplate
+    public function saveTemplate(array $data, int $userId): ScheduleTemplate
     {
         return DB::transaction(function () use ($data, $userId) {
 
@@ -27,19 +27,62 @@ class ScheduleTemplateService
                 'created_by' => $userId,
             ]);
 
-            foreach ($data['details'] as $detail) {
+            // ====================================
+            // 🔴 CASE 1: Export from Schedule
+            // ====================================
+            if (!empty($data['master_schedule_id'])) {
 
-                $template->details()->create([
-                    'day_of_week' => $detail['day_of_week'],
-                    'start_time' => $detail['start_time'],
-                    'end_time' => $detail['end_time'],
-                    'skill_id' => $detail['skill_id'],
+                $master = MasterSchedule::with('schedules')
+                    ->findOrFail($data['master_schedule_id']);
+
+                if ($master->schedules->isEmpty()) {
+                    throw ValidationException::withMessages([
+                        'schedules' => ['No schedules found']
+                    ]);
+                }
+
+                foreach ($master->schedules as $schedule) {
+
+                    $day = strtolower(
+                        Carbon::parse($schedule->date)->format('l')
+                    );
+
+                    $template->details()->create([
+                        'employee_id' => $schedule->employee_id,
+                        'day_of_week' => $day,
+                        'start_time' => $schedule->start_time,
+                        'end_time' => $schedule->end_time,
+                        'skill_id' => $schedule->skill_id,
+                    ]);
+                }
+
+                // 🔥 نحفظ store_id تلقائي
+                ScheduleTemplateStore::create([
+                    'schedule_template_id' => $template->id,
+                    'store_id' => $master->store_id,
                 ]);
             }
 
-            return $template->load('details');
+            // ====================================
+            // 🟢 CASE 2: General Template
+            // ====================================
+            else {
+
+                foreach ($data['details'] as $detail) {
+
+                    $template->details()->create([
+                        'day_of_week' => $detail['day_of_week'],
+                        'start_time' => $detail['start_time'],
+                        'end_time' => $detail['end_time'],
+                        'skill_id' => $detail['skill_id'],
+                    ]);
+                }
+            }
+
+            return $template->load(['details', 'stores']);
         });
     }
+    
 
     public function loadTemplatePreview(array $data): array
     {

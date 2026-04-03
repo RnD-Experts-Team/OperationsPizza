@@ -35,6 +35,7 @@ class User extends Authenticatable
     {
         return $this->hasMany(MasterSchedule::class, 'created_by');
     }
+
     public function publishedSchedules()
     {
         return $this->hasMany(MasterSchedule::class, 'published_by');
@@ -43,5 +44,9 @@ class User extends Authenticatable
     public function editedSchedules()
     {
         return $this->hasMany(Schedule::class, 'edited_by');
+    }
+    public function scheduleTemplates()
+    {
+        return $this->hasMany(ScheduleTemplate::class, 'created_by');
     }
 }

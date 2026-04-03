@@ -3,14 +3,15 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Http\Requests\SaveTemplateRequest;
-use App\Http\Requests\ApplyTemplateRequest;
+ 
 use App\Http\Requests\LoadTemplateRequest;
-use App\Services\Api\ScheduleTemplateService;
+use App\Http\Requests\SaveTemplateRequest;
+ use App\Services\Api\ScheduleTemplateService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Validation\ValidationException;
 use Throwable;
+use Illuminate\Http\Request;
 
 class ScheduleTemplateController extends Controller
 {
@@ -35,11 +36,10 @@ class ScheduleTemplateController extends Controller
             ], 500);
         }
     }
-
-    public function SaveGeneralTemplate(SaveTemplateRequest $request): JsonResponse
+    public function saveTemplate(SaveTemplateRequest $request): JsonResponse
     {
         try {
-            $template = $this->service->SaveGeneralTemplate(
+            $template = $this->service->saveTemplate(
                 $request->validated(),
                 auth()->id()
             );
@@ -55,13 +55,21 @@ class ScheduleTemplateController extends Controller
                 'message' => 'Master schedule not found',
             ], 404);
 
+        } catch (ValidationException $e) {
+            return response()->json([
+                'message' => $e->errors(),
+            ], 422);
+
         } catch (Throwable $e) {
             return response()->json([
-                'message' => 'Save template failed',
+                'message' => 'Failed to save template',
                 'error' => $e->getMessage(),
             ], 500);
         }
     }
+  
+
+     
 
     public function loadTemplate(LoadTemplateRequest $request): JsonResponse
     {
