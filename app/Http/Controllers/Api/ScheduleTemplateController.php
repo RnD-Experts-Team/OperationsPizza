@@ -17,10 +17,12 @@ class ScheduleTemplateController extends Controller
 {
     public function __construct(private ScheduleTemplateService $service) {}
 
-    public function AllTemplate(): JsonResponse
+    public function AllTemplate(Request $request): JsonResponse
     {
         try {
-            $data = $this->service->getAll();
+            $perPage = min((int) $request->get('per_page', 10), 50);
+
+            $data = $this->service->getAllPaginated($perPage);
 
             return response()->json([
                 'success' => true,

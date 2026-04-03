@@ -9,49 +9,45 @@ use Illuminate\Database\Eloquent\Collection;
 
 class FiltersService
 {
-    public function getPublishedFlexible(array $data)
+    // ✅ فلتر الماستر (يرجع Query)
+    public function getPublishedFlexibleQuery(array $data)
     {
         $query = MasterSchedule::query()
             ->where('published', true);
 
-        // 🟢 حالة: start + end
+        // 🟢 start + end
         if (!empty($data['start_date']) && !empty($data['end_date'])) {
-
             $query->where(function ($q) use ($data) {
                 $q->whereDate('start_date', '<=', $data['end_date'])
-                ->whereDate('end_date', '>=', $data['start_date']);
+                  ->whereDate('end_date', '>=', $data['start_date']);
             });
         }
 
-        // 🟡 حالة: start فقط
+        // 🟡 start فقط
         elseif (!empty($data['start_date'])) {
-
             $query->whereDate('end_date', '>=', $data['start_date']);
         }
 
-        // 🔵 حالة: end فقط
+        // 🔵 end فقط
         elseif (!empty($data['end_date'])) {
-
             $query->whereDate('start_date', '<=', $data['end_date']);
         }
 
-        // 🎯 فلتر store
+        // 🎯 store
         if (!empty($data['store_id'])) {
             $query->where('store_id', $data['store_id']);
         }
 
-        return $query->with('schedules')->get();
+        return $query;
     }
-    public function filterSchedulesByEmployee(array $data)
-    {
-        $query = Schedule::query()
-            ->where('schedule_week_id', $data['master_schedule_id']);
 
-        // 🎯 إذا محدد موظف
+    // ✅ فلتر الموظف (يعدل على Query موجود)
+    public function filterSchedulesByEmployeeQuery($query, array $data)
+    {
         if (!empty($data['employee_id'])) {
             $query->where('employee_id', $data['employee_id']);
         }
 
-        return $query->with(['employee', 'skill'])->get();
+        return $query;
     }
-}
+} 

@@ -20,7 +20,7 @@ use App\Http\Requests\DeleteScheduleRequest;
 
 class MasterScheduleController extends Controller
 {
-    public function __construct(private MasterScheduleService $service,private FiltersService $filtersService) {}
+    public function __construct(private MasterScheduleService $service) {}
     
 
     public function index(Request $request): JsonResponse
@@ -342,50 +342,6 @@ class MasterScheduleController extends Controller
             ], 500);
         }
     }
-
-
-
-    public function filterPublished(FilterPublishedSchedulesRequest $request): JsonResponse
-    {
-        try {
-            $data = $this->filtersService->getPublishedFlexible(
-                $request->validated()
-            );
-
-            return response()->json([
-                'success' => true,
-                'data' => $data
-            ]);
-
-        } catch (\Throwable $e) {
-            return response()->json([
-                'message' => 'Failed to fetch data',
-                'error' => $e->getMessage()
-            ], 500);
-        }
-    }
-
-    public function filterByEmployee(FilterSchedulesByEmployeeRequest $request): JsonResponse
-    {
-        try {
-            $data = $this->filtersService->filterSchedulesByEmployee(
-                $request->validated()
-            );
-
-            return response()->json([
-                'success' => true,
-                'data' => $data
-            ]);
-
-        } catch (\Throwable $e) {
-            return response()->json([
-                'message' => 'Failed to filter schedules',
-                'error' => $e->getMessage()
-            ], 500);
-        }
-    }
-
-
 
 
     public function initScheduling(InitSchedulingRequest $request): JsonResponse

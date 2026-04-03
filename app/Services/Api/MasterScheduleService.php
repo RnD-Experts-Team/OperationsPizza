@@ -14,26 +14,31 @@ use App\Models\Skill;
 
 class MasterScheduleService
 {
-    
+    protected FiltersService $service;
 
+    public function __construct(FiltersService $service)
+    {
+        $this->service = $service;
+    }
     public function initScheduling(array $data): array
     {
-        // published schedule
+        // 🔥 1. Published Schedule (باستخدام الفلاتر)
+        $publishedSchedule = $this->service
+            ->getPublishedFlexibleQuery($data)
+            ->with([
+                'schedules' => function ($query) use ($data) {
 
-        $publishedSchedule = MasterSchedule::with([
-                'schedules.employee',
-                'schedules.skill'
+                    // 🎯 فلتر الموظف
+                    $this->service
+                        ->filterSchedulesByEmployeeQuery($query, $data);
+
+                    $query->with(['employee', 'skill']);
+                }
             ])
-            ->where('store_id', $data['store_id'])
-            ->where('published', true)
-            ->where(function ($query) use ($data) {
-                $query->whereDate('start_date', '<=', $data['end_date'])
-                      ->whereDate('end_date', '>=', $data['start_date']);
-            })
             ->latest('start_date')
             ->first();
 
-        // days off
+        // 🔥 2. Days Off
         $daysOff = DayOff::with('employee')
             ->whereHas('employee', function ($query) use ($data) {
                 $query->where('store_id', $data['store_id']);
@@ -42,15 +47,18 @@ class MasterScheduleService
             ->where('acceptedStatus', 'approved')
             ->get();
 
-        // employees + availability + times + employee skills
+        // 🔥 3. Employees
         $employees = Employee::with([
-                'availability.times',
-                'skills'
+        'availability.times',
+        'skills'
             ])
             ->where('store_id', $data['store_id'])
+            ->when(isset($data['employee_id']) && $data['employee_id'] !== null, function ($query) use ($data) {
+                $query->where('id', $data['employee_id']);
+            })
             ->get();
 
-        // all skills
+        // 🔥 4. Skills
         $skills = Skill::get();
 
         return [
@@ -60,6 +68,10 @@ class MasterScheduleService
             'skills' => $skills,
         ];
     }
+    
+    
+
+   
     public function getAllPaginated(int $perPage = 10)
     {
         return MasterSchedule::with('schedules')

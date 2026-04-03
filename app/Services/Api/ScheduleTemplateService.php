@@ -10,12 +10,16 @@ use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 
 class ScheduleTemplateService
 {
-    public function getAll(): Collection
+
+    public function getAllPaginated(int $perPage = 10): LengthAwarePaginator
     {
-        return ScheduleTemplate::with('details')->orderBy('id', 'asc')->get();
+        return ScheduleTemplate::with('details')
+            ->orderBy('id', 'asc')
+            ->paginate($perPage);
     }
     public function saveTemplate(array $data, int $userId): ScheduleTemplate
     {
