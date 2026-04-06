@@ -1,8 +1,8 @@
 <?php
 
-use Illuminate\Support\Facades\Route;
-use App\Http\Controllers\Api\AvailabilityController;
-Route::middleware('auth:sanctum')->group(function () {
+use Illuminate\Support\Facades\Route; 
+use App\Http\Controllers\Api\EmployeeAvailabilityController;
 
-Route::apiResource('availabilities', AvailabilityController::class);
+Route::middleware('auth:sanctum')->group(function () {
+    Route::apiResource('employee-availabilities', EmployeeAvailabilityController::class);
 });

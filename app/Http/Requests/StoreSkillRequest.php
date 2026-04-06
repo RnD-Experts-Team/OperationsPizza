@@ -18,8 +18,8 @@ class StoreSkillRequest extends FormRequest
 
         if ($this->has('name') && $this->input('name') !== null) {
             $cleanName = trim($this->input('name'));
-            $cleanName = preg_replace('/\s+/', '', $cleanName);
-            $cleanName = ucfirst(strtolower($cleanName));
+            $cleanName = preg_replace('/\s+/', ' ', $cleanName);
+            $cleanName = ucwords(strtolower($cleanName));
             $cleanName = $cleanName === '' ? null : $cleanName;
 
             $data['name'] = $cleanName;
