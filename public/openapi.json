@@ -1,0 +1,3871 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Authentication API",
+    "version": "1.0.0",
+    "description": "Authentication endpoints using Laravel Sanctum."
+  },
+  "servers": [
+    {
+      "url": "https://yourdomain.com/api"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "sanctumAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "Token"
+      }
+    },
+    "schemas": {
+      "User": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "example": 1 },
+          "name": { "type": "string", "example": "John Doe" },
+          "email": { "type": "string", "example": "user@example.com" },
+          "email_verified_at": {
+            "type": "string",
+            "nullable": true,
+            "example": null
+          },
+          "created_at": {
+            "type": "string",
+            "example": "2026-04-01T12:00:00.000000Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "example": "2026-04-01T12:00:00.000000Z"
+          }
+        }
+      },
+      "ValidationError": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "example": "The given data was invalid."
+          },
+          "errors": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "example": {
+              "email": ["The email field is required."]
+            }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/login": {
+      "post": {
+        "summary": "User Login",
+        "operationId": "loginUser",
+        "tags": ["Authentication"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["email", "password"],
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "example": "user@example.com"
+                  },
+                  "password": {
+                    "type": "string",
+                    "example": "password123"
+                  }
+                }
+              },
+              "example": {
+                "email": "user@example.com",
+                "password": "password123"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Login successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "Login successful"
+                    },
+                    "user": {
+                      "$ref": "#/components/schemas/User"
+                    },
+                    "token": {
+                      "type": "string",
+                      "example": "1|laravel_sanctum_token"
+                    },
+                    "token_type": {
+                      "type": "string",
+                      "example": "Bearer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error or incorrect credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                },
+                "example": {
+                  "message": "The given data was invalid.",
+                  "errors": {
+                    "email": [
+                      "The provided credentials are incorrect."
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/logout": {
+      "post": {
+        "summary": "User Logout",
+        "operationId": "logoutUser",
+        "tags": ["Authentication"],
+        "security": [
+          {
+            "sanctumAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "Bearer 1|laravel_sanctum_token"
+            },
+            "description": "Bearer token obtained from login"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Logout successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "Logged out successfully"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "Unauthenticated."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/skills": {
+      "get": {
+        "summary": "Get all skills",
+        "operationId": "getSkills",
+        "tags": ["Skills"],
+        "security": [{ "sanctumAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Skills fetched successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Skills fetched successfully.",
+                  "data": [
+                    {
+                      "id": 1,
+                      "name": "Pizza Maker",
+                      "description": "Prepare Pizza",
+                      "employees": []
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": false,
+                  "message": "Failed to fetch skills.",
+                  "error": "Internal server error"
+                }
+              }
+            }
+          }
+        }
+      },
+
+      "post": {
+        "summary": "Create new skill",
+        "operationId": "createSkill",
+        "tags": ["Skills"],
+        "security": [{ "sanctumAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "example": "pizza maker"
+                  },
+                  "description": {
+                    "type": "string",
+                    "nullable": true,
+                    "example": "prepare pizza"
+                  }
+                }
+              },
+              "example": {
+                "name": "pizza maker",
+                "description": "prepare pizza"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Skill created",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Skill created successfully.",
+                  "data": {
+                    "id": 1,
+                    "name": "Pizza Maker",
+                    "description": "Prepare Pizza",
+                    "created_at": "2026-04-06T12:00:00.000000Z",
+                    "updated_at": "2026-04-06T12:00:00.000000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "The given data was invalid.",
+                  "errors": {
+                    "name": ["Skill name is already taken."]
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+
+    "/skills/{id}": {
+      "get": {
+        "summary": "Get skill by ID",
+        "operationId": "getSkillById",
+        "tags": ["Skills"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "example": 1 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Skill fetched",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Skill fetched successfully.",
+                  "data": {
+                    "id": 1,
+                    "name": "Pizza Maker",
+                    "description": "Prepare Pizza"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Skill not found",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": false,
+                  "message": "Skill not found."
+                }
+              }
+            }
+          }
+        }
+      },
+
+      "put": {
+        "summary": "Update skill",
+        "operationId": "updateSkill",
+        "tags": ["Skills"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "example": 1 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "example": {
+                "name": "kitchen manager",
+                "description": "manage kitchen"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Skill updated",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Skill updated successfully.",
+                  "data": {
+                    "id": 1,
+                    "name": "Kitchen Manager",
+                    "description": "Manage Kitchen"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Skill not found"
+          },
+          "422": {
+            "description": "Validation error"
+          }
+        }
+      },
+
+      "delete": {
+        "summary": "Delete skill (soft delete)",
+        "operationId": "deleteSkill",
+        "tags": ["Skills"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "example": 1 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Skill deleted successfully.",
+                  "code": "SKILL_DELETED"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Skill not found",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": false,
+                  "message": "Skill not found.",
+                  "code": "SKILL_NOT_FOUND"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Skill in use",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": false,
+                  "message": "Cannot delete this skill because it is assigned to employees.",
+                  "code": "SKILL_IN_USE"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/skills/trashed/all": {
+      "get": {
+        "summary": "Get all trashed skills",
+        "operationId": "getTrashedSkills",
+        "tags": ["Skills"],
+        "security": [{ "sanctumAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Trashed skills fetched",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Trashed skills fetched successfully.",
+                  "data": [
+                    {
+                      "id": 2,
+                      "name": "Driver",
+                      "description": "Delivery",
+                      "deleted_at": "2026-04-06T10:00:00.000000Z"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/skills/{id}/restore": {
+      "post": {
+        "summary": "Restore soft deleted skill",
+        "operationId": "restoreSkill",
+        "tags": ["Skills"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "example": 2 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Restored successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Skill restored successfully.",
+                  "code": "SKILL_RESTORED",
+                  "data": {
+                    "id": 2,
+                    "name": "Driver",
+                    "description": "Delivery"
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Not trashed",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": false,
+                  "message": "Skill is not deleted.",
+                  "code": "SKILL_NOT_TRASHED"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": false,
+                  "message": "Skill not found.",
+                  "code": "SKILL_NOT_FOUND"
+                }
+              }
+            }
+          }
+        }
+      }
+    },"/employee-skills": {
+      "get": {
+        "summary": "Get all employee skills",
+        "operationId": "getEmployeeSkills",
+        "tags": ["Employee Skills"],
+        "security": [{ "sanctumAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Fetched successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "data": [
+                    {
+                      "id": 1,
+                      "employee_id": 10,
+                      "skill_id": 2,
+                      "rating": 85,
+                      "employee": {
+                        "id": 10,
+                        "name": "John Doe"
+                      },
+                      "skill": {
+                        "id": 2,
+                        "name": "Pizza Maker"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": false,
+                  "message": "Failed to fetch data",
+                  "error": "Internal server error"
+                }
+              }
+            }
+          }
+        }
+      },
+
+      "post": {
+        "summary": "Assign skill to employee",
+        "operationId": "createEmployeeSkill",
+        "tags": ["Employee Skills"],
+        "security": [{ "sanctumAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["employee_id", "skill_id", "rating"],
+                "properties": {
+                  "employee_id": {
+                    "type": "integer",
+                    "example": 10
+                  },
+                  "skill_id": {
+                    "type": "integer",
+                    "example": 2
+                  },
+                  "rating": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "example": 85
+                  }
+                }
+              },
+              "example": {
+                "employee_id": 10,
+                "skill_id": 2,
+                "rating": 85
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Created successfully",
+                  "data": {
+                    "id": 1,
+                    "employee_id": 10,
+                    "skill_id": 2,
+                    "rating": 85,
+                    "created_at": "2026-04-06T12:00:00.000000Z"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "The given data was invalid.",
+                  "errors": {
+                    "skill_id": [
+                      "This employee already has this skill"
+                    ],
+                    "rating": [
+                      "Rating must not exceed 100"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+
+    "/employee-skills/{id}": {
+      "get": {
+        "summary": "Get employee skill by ID",
+        "operationId": "getEmployeeSkillById",
+        "tags": ["Employee Skills"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "example": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Fetched successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "data": {
+                    "id": 1,
+                    "employee_id": 10,
+                    "skill_id": 2,
+                    "rating": 85,
+                    "employee": {
+                      "id": 10,
+                      "name": "John Doe"
+                    },
+                    "skill": {
+                      "id": 2,
+                      "name": "Pizza Maker"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": false,
+                  "message": "Not found"
+                }
+              }
+            }
+          }
+        }
+      },
+
+      "put": {
+        "summary": "Update employee skill",
+        "operationId": "updateEmployeeSkill",
+        "tags": ["Employee Skills"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "example": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "example": {
+                "rating": 90
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Updated successfully",
+                  "data": {
+                    "id": 1,
+                    "employee_id": 10,
+                    "skill_id": 2,
+                    "rating": 90
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "422": {
+            "description": "Validation error"
+          }
+        }
+      },
+
+      "delete": {
+        "summary": "Delete employee skill",
+        "operationId": "deleteEmployeeSkill",
+        "tags": ["Employee Skills"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "example": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Deleted successfully"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": false,
+                  "message": "Not found"
+                }
+              }
+            }
+          }
+        }
+      }
+    },  "/employee-availabilities": {
+      "get": {
+        "summary": "Get all employee availabilities",
+        "operationId": "getEmployeeAvailabilities",
+        "tags": ["Employee Availabilities"],
+        "security": [
+          {
+            "sanctumAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "Bearer 1|laravel_sanctum_token"
+            },
+            "description": "Sanctum bearer token"
+          },
+          {
+            "name": "Accept",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "example": "application/json"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Employee availabilities fetched successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Employee availabilities fetched successfully.",
+                  "data": [
+                    {
+                      "id": 1,
+                      "employee_id": 5,
+                      "day_of_week": "monday",
+                      "employee": {
+                        "id": 5,
+                        "name": "John Doe",
+                        "store_id": 2
+                      },
+                      "times": [
+                        {
+                          "id": 11,
+                          "availability_id": 1,
+                          "from": "09:00:00",
+                          "to": "13:00:00"
+                        },
+                        {
+                          "id": 12,
+                          "availability_id": 1,
+                          "from": "14:00:00",
+                          "to": "18:00:00"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "Unauthenticated."
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to fetch employee availabilities",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": false,
+                  "message": "Failed to fetch employee availabilities.",
+                  "error": "Internal server error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create employee availability",
+        "operationId": "storeEmployeeAvailability",
+        "tags": ["Employee Availabilities"],
+        "security": [
+          {
+            "sanctumAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "Bearer 1|laravel_sanctum_token"
+            }
+          },
+          {
+            "name": "Accept",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "example": "application/json"
+            }
+          },
+          {
+            "name": "Content-Type",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "example": "application/json"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["employee_id", "day_of_week", "times"],
+                "properties": {
+                  "employee_id": {
+                    "type": "integer",
+                    "example": 5
+                  },
+                  "day_of_week": {
+                    "type": "string",
+                    "enum": [
+                      "monday",
+                      "tuesday",
+                      "wednesday",
+                      "thursday",
+                      "friday",
+                      "saturday",
+                      "sunday"
+                    ],
+                    "example": "Monday"
+                  },
+                  "times": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "required": ["from", "to"],
+                      "properties": {
+                        "from": {
+                          "type": "string",
+                          "example": "09:00"
+                        },
+                        "to": {
+                          "type": "string",
+                          "example": "13:00"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "example": {
+                "employee_id": 5,
+                "day_of_week": "Monday",
+                "times": [
+                  {
+                    "from": "09:00",
+                    "to": "13:00"
+                  },
+                  {
+                    "from": "14:00",
+                    "to": "18:00"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Employee availability created successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Employee availability created successfully.",
+                  "data": {
+                    "id": 1,
+                    "employee_id": 5,
+                    "day_of_week": "monday",
+                    "times": [
+                      {
+                        "id": 11,
+                        "availability_id": 1,
+                        "from": "09:00:00",
+                        "to": "13:00:00"
+                      },
+                      {
+                        "id": 12,
+                        "availability_id": 1,
+                        "from": "14:00:00",
+                        "to": "18:00:00"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "duplicateDay": {
+                    "value": {
+                      "message": "The given data was invalid.",
+                      "errors": {
+                        "day_of_week": [
+                          "This day already exists for this employee."
+                        ]
+                      }
+                    }
+                  },
+                  "invalidTimeOrder": {
+                    "value": {
+                      "message": "The given data was invalid.",
+                      "errors": {
+                        "times.0.from": [
+                          "From must be less than To"
+                        ]
+                      }
+                    }
+                  },
+                  "overlapExisting": {
+                    "value": {
+                      "message": "The given data was invalid.",
+                      "errors": {
+                        "times.0.from": [
+                          "This time overlaps with an existing time."
+                        ]
+                      }
+                    }
+                  },
+                  "overlapRequest": {
+                    "value": {
+                      "message": "The given data was invalid.",
+                      "errors": {
+                        "times.0.from": [
+                          "Times overlap with each other."
+                        ],
+                        "times.1.from": [
+                          "Times overlap with each other."
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "Unauthenticated."
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to create employee availability",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": false,
+                  "message": "Failed to create employee availability.",
+                  "error": "Internal server error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/employee-availabilities/{id}": {
+      "get": {
+        "summary": "Get employee availability by ID",
+        "operationId": "showEmployeeAvailability",
+        "tags": ["Employee Availabilities"],
+        "security": [
+          {
+            "sanctumAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "Bearer 1|laravel_sanctum_token"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "example": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Employee availability fetched successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Employee availability fetched successfully.",
+                  "data": {
+                    "id": 1,
+                    "employee_id": 5,
+                    "day_of_week": "monday",
+                    "employee": {
+                      "id": 5,
+                      "name": "John Doe"
+                    },
+                    "times": [
+                      {
+                        "id": 11,
+                        "availability_id": 1,
+                        "from": "09:00:00",
+                        "to": "13:00:00"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Employee availability not found",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": false,
+                  "message": "Employee availability not found."
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to fetch employee availability",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": false,
+                  "message": "Failed to fetch employee availability.",
+                  "error": "Internal server error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Update employee availability",
+        "operationId": "updateEmployeeAvailability",
+        "tags": ["Employee Availabilities"],
+        "security": [
+          {
+            "sanctumAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "Bearer 1|laravel_sanctum_token"
+            }
+          },
+          {
+            "name": "Content-Type",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "example": "application/json"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "example": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "example": {
+                "employee_id": 5,
+                "day_of_week": "Tuesday",
+                "times": [
+                  {
+                    "from": "10:00",
+                    "to": "14:00"
+                  },
+                  {
+                    "from": "15:00",
+                    "to": "19:00"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Employee availability updated successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Employee availability updated successfully.",
+                  "data": {
+                    "id": 1,
+                    "employee_id": 5,
+                    "day_of_week": "tuesday",
+                    "times": [
+                      {
+                        "id": 21,
+                        "availability_id": 1,
+                        "from": "10:00:00",
+                        "to": "14:00:00"
+                      },
+                      {
+                        "id": 22,
+                        "availability_id": 1,
+                        "from": "15:00:00",
+                        "to": "19:00:00"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Employee availability not found",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": false,
+                  "message": "Employee availability not found."
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error"
+          },
+          "500": {
+            "description": "Failed to update employee availability",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": false,
+                  "message": "Failed to update employee availability.",
+                  "error": "Internal server error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete employee availability",
+        "operationId": "deleteEmployeeAvailability",
+        "tags": ["Employee Availabilities"],
+        "security": [
+          {
+            "sanctumAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "Bearer 1|laravel_sanctum_token"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "example": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Employee availability deleted successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Employee availability deleted successfully."
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Employee availability not found",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": false,
+                  "message": "Employee availability not found."
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to delete employee availability",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": false,
+                  "message": "Failed to delete employee availability.",
+                  "error": "Internal server error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    ,"/days-off": {
+      "post": {
+        "summary": "Submit day off requests (bulk)",
+        "operationId": "storeDayOff",
+        "tags": ["Day Off"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["requests"],
+                "properties": {
+                  "requests": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "required": ["employee_id", "date", "type", "note"],
+                      "properties": {
+                        "employee_id": { "type": "integer", "example": 5 },
+                        "date": {
+                          "type": "string",
+                          "format": "date",
+                          "example": "2026-04-10"
+                        },
+                        "type": {
+                          "type": "string",
+                          "enum": ["sick day", "unavailable", "pto", "vto"],
+                          "example": "SICK DAY"
+                        },
+                        "note": {
+                          "type": "string",
+                          "example": " feeling sick   "
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "example": {
+                "requests": [
+                  {
+                    "employee_id": 5,
+                    "date": "2026-04-10",
+                    "type": "SICK DAY",
+                    "note": " feeling sick   "
+                  },
+                  {
+                    "employee_id": 6,
+                    "date": "2026-04-11",
+                    "type": "PTO",
+                    "note": " vacation "
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Requests submitted successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Requests submitted successfully",
+                  "data": [
+                    {
+                      "id": 1,
+                      "employee_id": 5,
+                      "date": "2026-04-10",
+                      "type": "sick day",
+                      "note": "feeling sick",
+                      "acceptedStatus": "pending",
+                      "accepted_by": null,
+                      "requested_at": "2026-04-06T10:00:00.000000Z"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "duplicateInDB": {
+                    "value": {
+                      "message": "The given data was invalid.",
+                      "errors": {
+                        "requests.0.date": [
+                          "This employee already has a day off request on this date."
+                        ]
+                      }
+                    }
+                  },
+                  "duplicateInRequest": {
+                    "value": {
+                      "message": "The given data was invalid.",
+                      "errors": {
+                        "requests.1.date": [
+                          "Duplicate day off for the same employee in request."
+                        ]
+                      }
+                    }
+                  },
+                  "invalidType": {
+                    "value": {
+                      "message": "The given data was invalid.",
+                      "errors": {
+                        "requests.0.type": [
+                          "Type is invalid."
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+
+      "get": {
+        "summary": "Get all day off requests",
+        "operationId": "getDayOffs",
+        "tags": ["Day Off"],
+        "security": [{ "sanctumAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Fetched successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "data": [
+                    {
+                      "id": 1,
+                      "employee_id": 5,
+                      "date": "2026-04-10",
+                      "type": "sick day",
+                      "note": "feeling sick",
+                      "acceptedStatus": "pending",
+                      "managerNote": null,
+                      "employee": {
+                        "id": 5,
+                        "name": "John Doe"
+                      },
+                      "accepted_by": null
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          }
+        }
+      }
+    },
+
+    "/days-off/{id}": {
+      "get": {
+        "summary": "Get day off by ID",
+        "operationId": "getDayOffById",
+        "tags": ["Day Off"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "example": 1 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Fetched successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "data": {
+                    "id": 1,
+                    "employee_id": 5,
+                    "date": "2026-04-10",
+                    "type": "sick day",
+                    "note": "feeling sick",
+                    "acceptedStatus": "pending",
+                    "managerNote": null
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "example": { "message": "Not found" }
+              }
+            }
+          }
+        }
+      },
+
+      "put": {
+        "summary": "Update / approve / reject day off",
+        "operationId": "updateDayOff",
+        "tags": ["Day Off"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "example": 1 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["managerNote", "acceptedStatus"],
+                "properties": {
+                  "date": {
+                    "type": "string",
+                    "format": "date",
+                    "example": "2026-04-12"
+                  },
+                  "managerNote": {
+                    "type": "string",
+                    "example": "Approved, arrange replacement"
+                  },
+                  "acceptedStatus": {
+                    "type": "string",
+                    "enum": ["pending", "approved", "rejected"],
+                    "example": "APPROVED"
+                  }
+                }
+              },
+              "example": {
+                "managerNote": " Approved   ",
+                "acceptedStatus": "APPROVED"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Updated successfully",
+                  "data": {
+                    "id": 1,
+                    "acceptedStatus": "approved",
+                    "managerNote": "Approved",
+                    "accepted_by": 3
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      },
+
+      "delete": {
+        "summary": "Delete day off",
+        "operationId": "deleteDayOff",
+        "tags": ["Day Off"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "example": 1 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Deleted successfully"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      }
+    },"/master-schedules": {
+      "get": {
+        "summary": "Get paginated master schedules",
+        "operationId": "getMasterSchedules",
+        "tags": ["Master Schedules"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "Bearer 1|laravel_sanctum_token"
+            }
+          },
+          {
+            "name": "Accept",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "example": "application/json"
+            }
+          },
+          {
+            "name": "per_page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "example": 10,
+              "minimum": 1,
+              "maximum": 50
+            },
+            "description": "Defaults to 10. Values above 50 are capped to 50."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Master schedules fetched successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "data": {
+                    "current_page": 1,
+                    "data": [
+                      {
+                        "id": 7,
+                        "store_id": 2,
+                        "start_date": "2026-04-07",
+                        "end_date": "2026-04-13",
+                        "published": false,
+                        "created_by": 3,
+                        "published_by": null,
+                        "schedules": [
+                          {
+                            "id": 101,
+                            "employee_id": 5,
+                            "date": "2026-04-07",
+                            "start_time": "09:00:00",
+                            "end_time": "17:00:00",
+                            "actual_start_time": null,
+                            "actual_end_time": null,
+                            "skill_id": 2,
+                            "edited_by": 3
+                          }
+                        ]
+                      }
+                    ],
+                    "per_page": 10,
+                    "total": 1
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Fetch failed",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "Failed to fetch data",
+                  "error": "Internal server error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/master-schedules/create": {
+      "post": {
+        "summary": "Create master schedule with schedules",
+        "operationId": "createMasterSchedule",
+        "tags": ["Master Schedules"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "Bearer 1|laravel_sanctum_token"
+            }
+          },
+          {
+            "name": "Accept",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "example": "application/json"
+            }
+          },
+          {
+            "name": "Content-Type",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "example": "application/json"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["store_id", "start_date", "end_date", "schedules"],
+                "properties": {
+                  "store_id": {
+                    "type": "integer",
+                    "example": 2
+                  },
+                  "start_date": {
+                    "type": "string",
+                    "format": "date",
+                    "example": "2026-04-07"
+                  },
+                  "end_date": {
+                    "type": "string",
+                    "format": "date",
+                    "example": "2026-04-13"
+                  },
+                  "schedules": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "required": ["date", "start_time", "end_time", "skill_id"],
+                      "properties": {
+                        "employee_id": {
+                          "type": "integer",
+                          "nullable": true,
+                          "example": 5
+                        },
+                        "date": {
+                          "type": "string",
+                          "format": "date",
+                          "example": "2026-04-07"
+                        },
+                        "start_time": {
+                          "type": "string",
+                          "example": "09:00"
+                        },
+                        "end_time": {
+                          "type": "string",
+                          "example": "17:00"
+                        },
+                        "skill_id": {
+                          "type": "integer",
+                          "example": 2
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "example": {
+                "store_id": 2,
+                "start_date": "2026-04-07",
+                "end_date": "2026-04-13",
+                "schedules": [
+                  {
+                    "employee_id": 5,
+                    "date": "2026-04-07",
+                    "start_time": "09:00",
+                    "end_time": "17:00",
+                    "skill_id": 2
+                  },
+                  {
+                    "employee_id": 6,
+                    "date": "2026-04-08",
+                    "start_time": "10:00",
+                    "end_time": "18:00",
+                    "skill_id": 3
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Created successfully",
+                  "data": {
+                    "id": 7,
+                    "store_id": 2,
+                    "start_date": "2026-04-07",
+                    "end_date": "2026-04-13",
+                    "published": false,
+                    "created_by": 3,
+                    "schedules": [
+                      {
+                        "id": 101,
+                        "employee_id": 5,
+                        "date": "2026-04-07",
+                        "start_time": "09:00:00",
+                        "end_time": "17:00:00",
+                        "actual_start_time": null,
+                        "actual_end_time": null,
+                        "skill_id": 2,
+                        "edited_by": 3
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "invalidWeekStart": {
+                    "value": {
+                      "message": {
+                        "start_date": [
+                          "start_date must be a Tuesday."
+                        ]
+                      }
+                    }
+                  },
+                  "invalidWeekEnd": {
+                    "value": {
+                      "message": {
+                        "end_date": [
+                          "end_date must be a Monday."
+                        ]
+                      }
+                    }
+                  },
+                  "notSevenDays": {
+                    "value": {
+                      "message": {
+                        "end_date": [
+                          "The date range must be exactly 7 days (Tuesday to Monday)."
+                        ]
+                      }
+                    }
+                  },
+                  "masterOverlap": {
+                    "value": {
+                      "message": {
+                        "date_range": [
+                          "This store already has a master schedule in the selected date range."
+                        ]
+                      }
+                    }
+                  },
+                  "employeeWrongStore": {
+                    "value": {
+                      "message": {
+                        "schedules.0.employee_id": [
+                          "The selected employee does not belong to the same store as this master schedule."
+                        ]
+                      }
+                    }
+                  },
+                  "employeeDayOff": {
+                    "value": {
+                      "message": {
+                        "schedules.0.employee_id": [
+                          "This employee has an approved day off on this date and cannot be scheduled."
+                        ]
+                      }
+                    }
+                  },
+                  "employeeUnavailableDay": {
+                    "value": {
+                      "message": {
+                        "schedules.0.employee_id": [
+                          "Employee is not available on this day."
+                        ]
+                      }
+                    }
+                  },
+                  "employeeUnavailableTime": {
+                    "value": {
+                      "message": {
+                        "schedules.0.start_time": [
+                          "Employee is not available during this time range."
+                        ]
+                      }
+                    }
+                  },
+                  "overlappingSplitShift": {
+                    "value": {
+                      "message": {
+                        "schedules.1.start_time": [
+                          "This employee has overlapping split shifts on the same day."
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Creation failed",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "Creation failed",
+                  "error": "Internal server error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/master-schedules/{id}": {
+      "get": {
+        "summary": "Get master schedule by ID with schedules",
+        "operationId": "showMasterSchedule",
+        "tags": ["Master Schedules"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string", "example": "Bearer 1|laravel_sanctum_token" }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "example": 7 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Fetched successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "data": {
+                    "id": 7,
+                    "store_id": 2,
+                    "start_date": "2026-04-07",
+                    "end_date": "2026-04-13",
+                    "published": false,
+                    "schedules": [
+                      {
+                        "id": 101,
+                        "employee_id": 5,
+                        "date": "2026-04-07",
+                        "start_time": "09:00:00",
+                        "end_time": "17:00:00",
+                        "actual_start_time": null,
+                        "actual_end_time": null,
+                        "skill_id": 2
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "Not found"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Soft delete master schedule and its schedules",
+        "operationId": "softDeleteMasterSchedule",
+        "tags": ["Master Schedules"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string", "example": "Bearer 1|laravel_sanctum_token" }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "example": 7 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Deleted successfully"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "Not found"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Delete failed",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "Delete failed",
+                  "error": "Internal server error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/master-schedules/update/{id}": {
+      "put": {
+        "summary": "Update master schedule with schedules",
+        "operationId": "updateMasterSchedule",
+        "tags": ["Master Schedules"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string", "example": "Bearer 1|laravel_sanctum_token" }
+          },
+          {
+            "name": "Content-Type",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string", "example": "application/json" }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "example": 7 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "example": {
+                "store_id": 2,
+                "start_date": "2026-04-07",
+                "end_date": "2026-04-13",
+                "schedules": [
+                  {
+                    "id": 101,
+                    "employee_id": 5,
+                    "date": "2026-04-07",
+                    "start_time": "09:00",
+                    "end_time": "17:00",
+                    "actual_start_time": "09:05",
+                    "actual_end_time": "17:02",
+                    "skill_id": 2
+                  },
+                  {
+                    "employee_id": 8,
+                    "date": "2026-04-09",
+                    "start_time": "12:00",
+                    "end_time": "20:00",
+                    "skill_id": 4
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Updated successfully",
+                  "data": {
+                    "id": 7,
+                    "store_id": 2,
+                    "start_date": "2026-04-07",
+                    "end_date": "2026-04-13",
+                    "schedules": [
+                      {
+                        "id": 101,
+                        "employee_id": 5,
+                        "date": "2026-04-07",
+                        "start_time": "09:00:00",
+                        "end_time": "17:00:00",
+                        "actual_start_time": "09:05:00",
+                        "actual_end_time": "17:02:00",
+                        "skill_id": 2
+                      },
+                      {
+                        "id": 110,
+                        "employee_id": 8,
+                        "date": "2026-04-09",
+                        "start_time": "12:00:00",
+                        "end_time": "20:00:00",
+                        "actual_start_time": null,
+                        "actual_end_time": null,
+                        "skill_id": 4
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "Not found"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "actualTimeOrder": {
+                    "value": {
+                      "message": {
+                        "schedules.0.actual_end_time": [
+                          "actual_end_time must be after actual_start_time."
+                        ]
+                      }
+                    }
+                  },
+                  "shiftTimeOrder": {
+                    "value": {
+                      "message": {
+                        "schedules.0.end_time": [
+                          "end_time must be after start_time."
+                        ]
+                      }
+                    }
+                  },
+                  "dateOutsideRange": {
+                    "value": {
+                      "message": {
+                        "schedules.0.date": [
+                          "schedule date must be within the master schedule range."
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Update failed",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "Update failed",
+                  "error": "Internal server error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/master-schedules/trashed": {
+      "get": {
+        "summary": "Get trashed master schedules",
+        "operationId": "getTrashedMasterSchedules",
+        "tags": ["Master Schedules"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string", "example": "Bearer 1|laravel_sanctum_token" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Trashed records fetched successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "data": [
+                    {
+                      "id": 7,
+                      "store_id": 2,
+                      "start_date": "2026-04-07",
+                      "end_date": "2026-04-13",
+                      "deleted_at": "2026-04-06T10:20:00.000000Z",
+                      "schedules": [
+                        {
+                          "id": 101,
+                          "employee_id": 5,
+                          "date": "2026-04-07",
+                          "deleted_at": "2026-04-06T10:20:00.000000Z"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/master-schedules/{id}/restore": {
+      "post": {
+        "summary": "Restore soft deleted master schedule and schedules",
+        "operationId": "restoreMasterSchedule",
+        "tags": ["Master Schedules"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string", "example": "Bearer 1|laravel_sanctum_token" }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "example": 7 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Restored successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Restored successfully",
+                  "data": {
+                    "id": 7,
+                    "store_id": 2,
+                    "start_date": "2026-04-07",
+                    "end_date": "2026-04-13",
+                    "schedules": [
+                      {
+                        "id": 101,
+                        "employee_id": 5,
+                        "date": "2026-04-07"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "example": { "message": "Not found" }
+              }
+            }
+          },
+          "500": {
+            "description": "Restore failed",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "Restore failed",
+                  "error": "Internal server error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/master-schedules/{id}/force": {
+      "delete": {
+        "summary": "Force delete master schedule permanently",
+        "operationId": "forceDeleteMasterSchedule",
+        "tags": ["Master Schedules"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string", "example": "Bearer 1|laravel_sanctum_token" }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "example": 7 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Permanently deleted successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Permanently deleted successfully"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "example": { "message": "Not found" }
+              }
+            }
+          },
+          "422": {
+            "description": "Must be soft deleted first",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": {
+                    "force_delete": [
+                      "You must delete the record first before force deleting."
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/schedules/delete/{id}": {
+      "delete": {
+        "summary": "Soft delete single schedule",
+        "operationId": "deleteSchedule",
+        "tags": ["Schedules"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string", "example": "Bearer 1|laravel_sanctum_token" }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "example": 101 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Schedule deleted successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Schedule deleted successfully"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Schedule not found",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "Schedule not found"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Delete blocked by business rules",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "publishedMaster": {
+                    "value": {
+                      "message": {
+                        "schedule": [
+                          "Cannot delete schedule from a published master schedule."
+                        ]
+                      }
+                    }
+                  },
+                  "hasActualTime": {
+                    "value": {
+                      "message": {
+                        "schedule": [
+                          "Cannot delete a schedule that has actual time recorded."
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/schedules/delete/{id}/restore": {
+      "post": {
+        "summary": "Restore single soft deleted schedule",
+        "operationId": "restoreSchedule",
+        "tags": ["Schedules"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string", "example": "Bearer 1|laravel_sanctum_token" }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "example": 101 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Schedule restored successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Schedule restored successfully",
+                  "data": {
+                    "id": 101,
+                    "employee_id": 5,
+                    "date": "2026-04-07",
+                    "start_time": "09:00:00",
+                    "end_time": "17:00:00",
+                    "actual_start_time": null,
+                    "actual_end_time": null,
+                    "skill_id": 2
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Schedule not found",
+            "content": {
+              "application/json": {
+                "example": { "message": "Schedule not found" }
+              }
+            }
+          },
+          "500": {
+            "description": "Restore failed",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "Restore failed",
+                  "error": "Internal server error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/schedules/delete/{id}/force": {
+      "delete": {
+        "summary": "Force delete single schedule permanently",
+        "operationId": "forceDeleteSchedule",
+        "tags": ["Schedules"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string", "example": "Bearer 1|laravel_sanctum_token" }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "example": 101 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Schedule permanently deleted successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Schedule permanently deleted successfully"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Schedule not found",
+            "content": {
+              "application/json": {
+                "example": { "message": "Schedule not found" }
+              }
+            }
+          },
+          "422": {
+            "description": "Must be soft deleted first",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": {
+                    "force_delete": [
+                      "You must delete the schedule first before force deleting."
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/master-schedules/{id}/publish": {
+      "post": {
+        "summary": "Publish master schedule",
+        "operationId": "publishMasterSchedule",
+        "tags": ["Master Schedules"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string", "example": "Bearer 1|laravel_sanctum_token" }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "example": 7 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Published successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Published successfully",
+                  "data": {
+                    "id": 7,
+                    "published": true,
+                    "published_by": 3,
+                    "schedules": [
+                      {
+                        "id": 101,
+                        "date": "2026-04-07"
+                      },
+                      {
+                        "id": 102,
+                        "date": "2026-04-08"
+                      },
+                      {
+                        "id": 103,
+                        "date": "2026-04-09"
+                      },
+                      {
+                        "id": 104,
+                        "date": "2026-04-10"
+                      },
+                      {
+                        "id": 105,
+                        "date": "2026-04-11"
+                      },
+                      {
+                        "id": 106,
+                        "date": "2026-04-12"
+                      },
+                      {
+                        "id": 107,
+                        "date": "2026-04-13"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "example": { "message": "Not found" }
+              }
+            }
+          },
+          "422": {
+            "description": "Cannot publish",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "alreadyPublished": {
+                    "value": {
+                      "message": {
+                        "published": [
+                          "This master schedule is already published."
+                        ]
+                      }
+                    }
+                  },
+                  "emptySchedule": {
+                    "value": {
+                      "message": {
+                        "schedules": [
+                          "Cannot publish an empty schedule."
+                        ]
+                      }
+                    }
+                  },
+                  "missingDay": {
+                    "value": {
+                      "message": {
+                        "schedules": [
+                          "Missing schedule for date: 2026-04-10"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/master-schedules/{id}/unpublish": {
+      "post": {
+        "summary": "Unpublish master schedule",
+        "operationId": "unpublishMasterSchedule",
+        "tags": ["Master Schedules"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string", "example": "Bearer 1|laravel_sanctum_token" }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "example": 7 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Unpublished successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Unpublished successfully",
+                  "data": {
+                    "id": 7,
+                    "published": false,
+                    "published_by": null
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "example": { "message": "Not found" }
+              }
+            }
+          },
+          "422": {
+            "description": "Already unpublished",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": {
+                    "published": [
+                      "This master schedule is already unpublished."
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/scheduling/init": {
+      "post": {
+        "summary": "Initialize scheduling page data",
+        "operationId": "initScheduling",
+        "tags": ["Master Schedules"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string", "example": "Bearer 1|laravel_sanctum_token" }
+          },
+          {
+            "name": "Content-Type",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string", "example": "application/json" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "example": {
+                "store_id": 2,
+                "start_date": "2026-04-07",
+                "end_date": "2026-04-13",
+                "employee_id": 5
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Scheduling initialized successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Scheduling initialized successfully",
+                  "data": {
+                    "published_schedule": {
+                      "id": 6,
+                      "store_id": 2,
+                      "start_date": "2026-03-31",
+                      "end_date": "2026-04-06",
+                      "published": true,
+                      "schedules": [
+                        {
+                          "id": 90,
+                          "employee_id": 5,
+                          "date": "2026-04-01",
+                          "start_time": "09:00:00",
+                          "end_time": "17:00:00",
+                          "skill": {
+                            "id": 2,
+                            "name": "Pizza Maker"
+                          },
+                          "employee": {
+                            "id": 5,
+                            "name": "John Doe"
+                          }
+                        }
+                      ]
+                    },
+                    "days_off": [
+                      {
+                        "id": 12,
+                        "employee_id": 5,
+                        "date": "2026-04-10",
+                        "acceptedStatus": "approved",
+                        "employee": {
+                          "id": 5,
+                          "name": "John Doe"
+                        }
+                      }
+                    ],
+                    "employees": [
+                      {
+                        "id": 5,
+                        "name": "John Doe",
+                        "availability": [
+                          {
+                            "day_of_week": "friday",
+                            "times": [
+                              {
+                                "from": "09:00:00",
+                                "to": "17:00:00"
+                              }
+                            ]
+                          }
+                        ],
+                        "skills": [
+                          {
+                            "id": 2,
+                            "name": "Pizza Maker"
+                          }
+                        ]
+                      }
+                    ],
+                    "skills": [
+                      {
+                        "id": 2,
+                        "name": "Pizza Maker"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "The given data was invalid.",
+                  "errors": {
+                    "store_id": [
+                      "The selected store id is invalid."
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Initialization failed",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": false,
+                  "message": "Failed to initialize scheduling",
+                  "error": "Internal server error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/master-schedules/copy": {
+      "post": {
+        "summary": "Copy week schedule into next week",
+        "operationId": "copyMasterScheduleWeek",
+        "tags": ["Master Schedules"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string", "example": "Bearer 1|laravel_sanctum_token" }
+          },
+          {
+            "name": "Content-Type",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string", "example": "application/json" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "examples": {
+                "copyPreviousWeekDefault": {
+                  "value": {
+                    "store_id": 2,
+                    "start_date": "2026-04-14",
+                    "end_date": "2026-04-20"
+                  }
+                },
+                "copySelectedMaster": {
+                  "value": {
+                    "store_id": 2,
+                    "start_date": "2026-04-14",
+                    "end_date": "2026-04-20",
+                    "master_schedule_id": 7
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Schedule copied successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Schedule copied successfully",
+                  "data": {
+                    "id": 8,
+                    "store_id": 2,
+                    "start_date": "2026-04-14",
+                    "end_date": "2026-04-20",
+                    "published": false,
+                    "created_by": 3,
+                    "schedules": [
+                      {
+                        "id": 120,
+                        "employee_id": 5,
+                        "date": "2026-04-14",
+                        "start_time": "09:00:00",
+                        "end_time": "17:00:00",
+                        "actual_start_time": null,
+                        "actual_end_time": null,
+                        "skill_id": 2,
+                        "edited_by": 3
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Copy validation error",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "alreadyExists": {
+                    "value": {
+                      "message": {
+                        "start_date": [
+                          "This schedule already exists."
+                        ]
+                      }
+                    }
+                  },
+                  "notNextWeek": {
+                    "value": {
+                      "message": {
+                        "start_date": [
+                          "Only next week is allowed."
+                        ]
+                      }
+                    }
+                  },
+                  "wrongStartDay": {
+                    "value": {
+                      "message": {
+                        "start_date": [
+                          "start_date must be Tuesday."
+                        ]
+                      }
+                    }
+                  },
+                  "wrongEndDay": {
+                    "value": {
+                      "message": {
+                        "end_date": [
+                          "end_date must be Monday."
+                        ]
+                      }
+                    }
+                  },
+                  "noPreviousWeek": {
+                    "value": {
+                      "message": {
+                        "previous": [
+                          "No previous week found."
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to copy schedule",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "Failed to copy schedule",
+                  "error": "Internal server error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }, "/schedules/delete/{id}": {
+      "delete": {
+        "summary": "Soft delete a schedule",
+        "description": "Soft deletes a schedule. Cannot delete if the parent master schedule is published or if actual times are recorded.",
+        "operationId": "deleteSchedule",
+        "tags": ["Schedules"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "Bearer 1|laravel_sanctum_token"
+            }
+          },
+          {
+            "name": "Accept",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "example": "application/json"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "example": 101
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Schedule deleted successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Schedule deleted successfully"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Schedule not found",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "Schedule not found"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Deletion blocked by business rules",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "publishedMaster": {
+                    "summary": "Parent master schedule is published",
+                    "value": {
+                      "message": {
+                        "schedule": [
+                          "Cannot delete schedule from a published master schedule."
+                        ]
+                      }
+                    }
+                  },
+                  "hasActualTimes": {
+                    "summary": "Actual time already recorded",
+                    "value": {
+                      "message": {
+                        "schedule": [
+                          "Cannot delete a schedule that has actual time recorded."
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Delete failed",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "Delete failed",
+                  "error": "Internal server error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/schedules/delete/{id}/restore": {
+      "post": {
+        "summary": "Restore a soft-deleted schedule",
+        "description": "Restores a schedule only if it was previously soft deleted.",
+        "operationId": "restoreSchedule",
+        "tags": ["Schedules"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "Bearer 1|laravel_sanctum_token"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "example": 101
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Schedule restored successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Schedule restored successfully",
+                  "data": {
+                    "id": 101,
+                    "employee_id": 5,
+                    "date": "2026-04-07",
+                    "start_time": "09:00:00",
+                    "end_time": "17:00:00",
+                    "actual_start_time": null,
+                    "actual_end_time": null,
+                    "skill_id": 2
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Schedule not found",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "Schedule not found"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Schedule is not deleted",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": {
+                    "restore": [
+                      "Schedule is not deleted."
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Restore failed",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "Restore failed",
+                  "error": "Internal server error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/schedules/delete/{id}/force": {
+      "delete": {
+        "summary": "Force delete a schedule permanently",
+        "description": "Permanently deletes a schedule. The schedule must be soft deleted first.",
+        "operationId": "forceDeleteSchedule",
+        "tags": ["Schedules"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "Bearer 1|laravel_sanctum_token"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "example": 101
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Schedule permanently deleted",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Schedule permanently deleted successfully"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Schedule not found",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "Schedule not found"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Must be soft deleted first",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": {
+                    "force_delete": [
+                      "You must delete the schedule first before force deleting."
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Force delete failed",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "Force delete failed",
+                  "error": "Internal server error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }, "/employees/by-store": {
+      "post": {
+        "summary": "Get employees by store",
+        "operationId": "getEmployeesByStore",
+        "tags": ["Employees"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "Bearer 1|laravel_sanctum_token"
+            }
+          },
+          {
+            "name": "Accept",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "example": "application/json"
+            }
+          },
+          {
+            "name": "Content-Type",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "example": "application/json"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["store_id"],
+                "properties": {
+                  "store_id": {
+                    "type": "integer",
+                    "example": 2
+                  }
+                }
+              },
+              "example": {
+                "store_id": 2
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Employees fetched successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "data": [
+                    {
+                      "id": 5,
+                      "name": "John Doe",
+                      "email": "john@example.com",
+                      "store_id": 2,
+                      "created_at": "2026-04-01T10:00:00.000000Z",
+                      "updated_at": "2026-04-01T10:00:00.000000Z"
+                    },
+                    {
+                      "id": 6,
+                      "name": "Jane Smith",
+                      "email": "jane@example.com",
+                      "store_id": 2,
+                      "created_at": "2026-04-02T11:00:00.000000Z",
+                      "updated_at": "2026-04-02T11:00:00.000000Z"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "The given data was invalid.",
+                  "errors": {
+                    "store_id": [
+                      "The selected store id is invalid."
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "Unauthenticated."
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to fetch employees",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "Failed to fetch employees",
+                  "error": "Internal server error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },"/schedule-templates/all": {
+      "get": {
+        "summary": "Get all schedule templates (paginated)",
+        "operationId": "getAllTemplates",
+        "tags": ["Schedule Templates"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "Bearer 1|laravel_sanctum_token"
+            }
+          },
+          {
+            "name": "per_page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "example": 10
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Templates fetched successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Templates fetched successfully",
+                  "data": {
+                    "current_page": 1,
+                    "data": [
+                      {
+                        "id": 1,
+                        "name": "Default Week Template",
+                        "description": "Standard shifts",
+                        "details": [
+                          {
+                            "day_of_week": "tuesday",
+                            "start_time": "09:00:00",
+                            "end_time": "17:00:00",
+                            "skill_id": 2
+                          }
+                        ]
+                      }
+                    ],
+                    "per_page": 10
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to fetch templates"
+          }
+        }
+      }
+    },
+
+    "/schedule-templates/save": {
+      "post": {
+        "summary": "Create general schedule template",
+        "operationId": "saveGeneralTemplate",
+        "tags": ["Schedule Templates"],
+        "security": [{ "sanctumAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "example": {
+                "name": "Weekend Template",
+                "description": "Weekend shifts",
+                "details": [
+                  {
+                    "day_of_week": "SATURDAY",
+                    "start_time": "10:00",
+                    "end_time": "18:00",
+                    "skill_id": 2
+                  },
+                  {
+                    "day_of_week": "SUNDAY",
+                    "start_time": "10:00",
+                    "end_time": "18:00",
+                    "skill_id": 3
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Template saved successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Template saved successfully",
+                  "data": {
+                    "id": 1,
+                    "name": "Weekend Template",
+                    "details": [
+                      {
+                        "day_of_week": "saturday",
+                        "start_time": "10:00:00",
+                        "end_time": "18:00:00"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error"
+          }
+        }
+      }
+    },
+
+    "/schedule-templates/save/{id}": {
+      "post": {
+        "summary": "Create template from master schedule",
+        "operationId": "saveTemplateFromMaster",
+        "tags": ["Schedule Templates"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "example": 7
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "example": {
+                "name": "Copied Template",
+                "description": "From master schedule",
+                "master_schedule_id": 7
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Template created from master schedule",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Template saved successfully",
+                  "data": {
+                    "id": 2,
+                    "name": "Copied Template",
+                    "stores": [
+                      {
+                        "store_id": 2
+                      }
+                    ],
+                    "details": [
+                      {
+                        "employee_id": 5,
+                        "day_of_week": "tuesday",
+                        "start_time": "09:00:00",
+                        "end_time": "17:00:00",
+                        "skill_id": 2
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Master schedule not found"
+          },
+          "422": {
+            "description": "No schedules found in master"
+          }
+        }
+      }
+    },
+
+    "/schedule-templates/load": {
+      "post": {
+        "summary": "Load template preview (map to dates)",
+        "operationId": "loadTemplate",
+        "tags": ["Schedule Templates"],
+        "security": [{ "sanctumAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "example": {
+                "template_id": 1,
+                "start_date": "2026-04-07"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Template preview generated",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "data": {
+                    "template_shifts": [
+                      {
+                        "date": "2026-04-07",
+                        "start_time": "09:00:00",
+                        "end_time": "17:00:00",
+                        "skill_id": 2,
+                        "employee_id": null,
+                        "source": "template"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid start date (must be Tuesday)"
+          }
+        }
+      }
+    },
+
+    "/schedule-templates/show/{id}": {
+      "get": {
+        "summary": "Get template by ID",
+        "operationId": "showTemplate",
+        "tags": ["Schedule Templates"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "example": 1 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Template fetched",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Template fetched successfully",
+                  "data": {
+                    "id": 1,
+                    "name": "Weekend Template",
+                    "details": [
+                      {
+                        "day_of_week": "saturday",
+                        "start_time": "10:00:00",
+                        "end_time": "18:00:00"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Template not found"
+          }
+        }
+      }
+    },
+
+    "/schedule-templates/delete/{id}": {
+      "delete": {
+        "summary": "Delete template",
+        "operationId": "deleteTemplate",
+        "tags": ["Schedule Templates"],
+        "security": [{ "sanctumAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "example": 1 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Template deleted",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Template deleted successfully"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Template not found"
+          }
+        }
+      }
+    }
+  
+
+  }
+}

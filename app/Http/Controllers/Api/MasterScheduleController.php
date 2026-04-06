@@ -3,21 +3,17 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Http\Requests\FilterPublishedSchedulesRequest;
-use App\Http\Requests\StoreMasterScheduleRequest;
+ use App\Http\Requests\StoreMasterScheduleRequest;
 use App\Http\Requests\UpdateMasterScheduleRequest;
-use App\Services\Api\FiltersService;
-use App\Services\Api\MasterScheduleService;
+ use App\Services\Api\MasterScheduleService;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
 use Throwable;
-use App\Http\Requests\FilterSchedulesByEmployeeRequest;
-use App\Http\Requests\InitSchedulingRequest;
+ use App\Http\Requests\InitSchedulingRequest;
 use App\Http\Requests\CopyPreviousWeekRequest;
-use App\Http\Requests\DeleteScheduleRequest;
-
+ 
 class MasterScheduleController extends Controller
 {
     public function __construct(private MasterScheduleService $service) {}
