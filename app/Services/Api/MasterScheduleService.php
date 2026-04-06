@@ -133,11 +133,7 @@ class MasterScheduleService
 
     public function updateWithSchedules(MasterSchedule $master, array $data, ?int $userId = null): MasterSchedule
     {
-        if ($master->published) {
-            throw ValidationException::withMessages([
-                'published' => ['Cannot modify a published schedule.']
-            ]);
-        }
+         
 
         return DB::transaction(function () use ($master, $data, $userId) {
 
@@ -223,32 +219,35 @@ class MasterScheduleService
         });
     }
 
-    public function publish(MasterSchedule $master,int $userId): MasterSchedule
+    public function publish(MasterSchedule $master, int $userId): MasterSchedule
     {
-        // 🔴 إذا منشور مسبقًا
+        // 🔴 already published
         if ($master->published) {
             throw ValidationException::withMessages([
                 'published' => ['This master schedule is already published.'],
             ]);
         }
 
-        // 🔥 لازم يكون فيه schedules
+        // 🔴 empty schedules
         if ($master->schedules()->count() === 0) {
             throw ValidationException::withMessages([
                 'schedules' => ['Cannot publish an empty schedule.'],
             ]);
         }
 
-        // 🔥 تحقق: كل يوم فيه schedule
+        // 🔥 generate required dates
         $dates = $this->generateWeekDates($master->start_date, $master->end_date);
 
+        // 🔥 normalize DB dates (VERY IMPORTANT FIX)
         $existingDates = $master->schedules()
             ->pluck('date')
+            ->map(fn($d) => Carbon::parse($d)->format('Y-m-d'))
             ->unique()
-            ->toArray();
+            ->values();
 
+        // 🔥 check missing dates
         foreach ($dates as $date) {
-            if (!in_array($date, $existingDates)) {
+            if (!$existingDates->contains($date)) {
                 throw ValidationException::withMessages([
                     'schedules' => ["Missing schedule for date: $date"],
                 ]);
