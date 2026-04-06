@@ -4,6 +4,7 @@ namespace App\Services\Api;
 
 use App\Models\DayOff;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Support\Facades\DB;
 
 class DayOffService
 {
@@ -19,18 +20,27 @@ class DayOffService
         return DayOff::with(['employee', 'acceptedBy'])->findOrFail($id);
     }
 
-    public function create(array $data): DayOff
+     public function create(array $data)
     {
-        return DayOff::create([
-            'employee_id' => $data['employee_id'],
-            'date' => $data['date'],
-            'type' => $data['type'],
-            'note' => $data['note'],
+        return DB::transaction(function () use ($data) {
 
-            'requested_at' => now(),
-            'acceptedStatus' => 'pending',
-            'accepted_by' => null,
-        ]);
+            $results = [];
+
+            foreach ($data['requests'] as $item) {
+                $results[] = DayOff::create([
+                    'employee_id' => $item['employee_id'],
+                    'date' => $item['date'],
+                    'type' => $item['type'],
+                    'note' => $item['note'],
+
+                    'requested_at' => now(),
+                    'acceptedStatus' => 'pending',
+                    'accepted_by' => null,
+                ]);
+            }
+
+            return $results;
+        });
     }
 
     public function update(DayOff $dayOff, array $data, ?int $userId): DayOff

@@ -4,6 +4,7 @@ namespace App\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
+use App\Models\DayOff;
 
 class StoreDayOffRequest extends FormRequest
 {
@@ -14,45 +15,126 @@ class StoreDayOffRequest extends FormRequest
 
     protected function prepareForValidation(): void
     {
+        if (!$this->requests || !is_array($this->requests)) {
+            return;
+        }
+
+        $cleaned = [];
+
+        foreach ($this->requests as $item) {
+
+            // normalize type
+            $type = isset($item['type']) && is_string($item['type'])
+                ? strtolower($item['type'])
+                : $item['type'] ?? null;
+
+            // clean note
+            $note = $item['note'] ?? null;
+
+            if (is_string($note)) {
+                $note = trim($note);
+                $note = preg_replace('/\s+/', ' ', $note);
+            }
+
+            $cleaned[] = [
+                'employee_id' => $item['employee_id'] ?? null,
+                'date' => $item['date'] ?? null,
+                'type' => $type,
+                'note' => $note,
+            ];
+        }
+
         $this->merge([
-            'type' => is_string($this->type) ? strtolower($this->type) : $this->type,
+            'requests' => $cleaned
         ]);
     }
 
     public function rules(): array
     {
         return [
-            'employee_id' => ['required', 'exists:employees,id'],
+            'requests' => ['required', 'array', 'min:1'],
 
-            'date' => [
+            'requests.*.employee_id' => ['required', 'exists:employees,id'],
+
+            'requests.*.date' => [
                 'required',
                 'date',
-                Rule::unique('days_off')
-                    ->where(function ($query) {
-                        return $query->where('employee_id', $this->employee_id);
-                    }),
+                function ($attribute, $value, $fail) {
+
+                    preg_match('/requests\.(\d+)\./', $attribute, $matches);
+                    $index = $matches[1] ?? null;
+
+                    $employeeId = $this->requests[$index]['employee_id'] ?? null;
+
+                    $exists = DayOff::where('employee_id', $employeeId)
+                        ->where('date', $value)
+                        ->exists();
+
+                    if ($exists) {
+                        $fail('This employee already has a day off request on this date.');
+                    }
+                }
             ],
 
-            'type' => [
+            'requests.*.type' => [
                 'required',
                 Rule::in(['sick day', 'unavailable', 'pto', 'vto'])
             ],
 
-            'note' => ['required', 'string'],
+            'requests.*.note' => ['required', 'string'],
         ];
     }
 
     public function messages(): array
     {
         return [
-            'employee_id.required' => 'Employee id is required.',
-            'employee_id.exists' => 'Selected employee does not exist.',
-            'date.required' => 'Date is required.',
-            'date.date' => 'Date must be a valid date.',
-            'date.unique' => 'This employee already has a day off request on this date.',
-            'type.required' => 'Type is required.',
-            'type.in' => 'Type is invalid.',
-            'note.required' => 'Note is required.',
+            'requests.required' => 'Requests are required.',
+            'requests.array' => 'Requests must be an array.',
+
+            'requests.*.employee_id.required' => 'Employee id is required.',
+            'requests.*.employee_id.exists' => 'Selected employee does not exist.',
+
+            'requests.*.date.required' => 'Date is required.',
+            'requests.*.date.date' => 'Date must be a valid date.',
+
+            'requests.*.type.required' => 'Type is required.',
+            'requests.*.type.in' => 'Type is invalid.',
+
+            'requests.*.note.required' => 'Note is required.',
         ];
+    }
+
+    public function withValidator($validator)
+    {
+        $validator->after(function ($validator) {
+
+            if (!$this->requests || !is_array($this->requests)) {
+                return;
+            }
+
+            $seen = [];
+
+            foreach ($this->requests as $index => $item) {
+
+                $employeeId = $item['employee_id'] ?? null;
+                $date = $item['date'] ?? null;
+
+                if (!$employeeId || !$date) {
+                    continue;
+                }
+
+                $key = $employeeId . '_' . $date;
+
+                // ✅ check duplicate inside same request
+                if (isset($seen[$key])) {
+                    $validator->errors()->add(
+                        "requests.$index.date",
+                        'Duplicate day off for the same employee in request.'
+                    );
+                } else {
+                    $seen[$key] = true;
+                }
+            }
+        });
     }
 }

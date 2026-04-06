@@ -41,9 +41,10 @@ class DayOffController extends Controller
 
             return response()->json([
                 'success' => true,
-                'message' => 'Request submitted successfully',
+                'message' => 'Requests submitted successfully',
                 'data' => $data
             ], 201);
+
         } catch (Throwable $e) {
             return response()->json([
                 'message' => 'Failed to create request',
@@ -68,8 +69,7 @@ class DayOffController extends Controller
 
     public function update(UpdateDayOffRequest $request, int $id): JsonResponse
     {
-        // dd(auth()->id(), auth()->user());
-        try {
+         try {
             $record = $this->service->getById($id);
 
             $updated = $this->service->update(
