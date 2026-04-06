@@ -7,11 +7,14 @@ use Illuminate\Database\Eloquent\Collection;
 
 class SkillService
 {
-    public function getAll(): Collection
+   public function getAll(): Collection
     {
-      return Skill::orderBy('id', 'asc')->get();
+        return Skill::with(['employees' => function ($query) {
+            $query->orderBy('store_id', 'asc');
+        }])
+        ->orderBy('id', 'asc')
+        ->get();
     }
-
     public function getById(int $id): Skill
     {
         return Skill::findOrFail($id);

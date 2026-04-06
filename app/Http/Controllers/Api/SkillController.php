@@ -8,6 +8,7 @@ use App\Http\Requests\StoreSkillRequest;
 use App\Models\Skill;
 use App\Services\Api\SkillService;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Throwable;
 
@@ -116,17 +117,36 @@ class SkillController extends Controller
             return response()->json([
                 'success' => true,
                 'message' => 'Skill deleted successfully.',
+                'code' => 'SKILL_DELETED',
             ], 200);
+
         } catch (ModelNotFoundException $e) {
             return response()->json([
                 'success' => false,
                 'message' => 'Skill not found.',
+                'code' => 'SKILL_NOT_FOUND',
             ], 404);
+
+        } catch (QueryException $e) {
+            if ((int) $e->getCode() === 23000) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Cannot delete this skill because it is assigned to employees.',
+                    'code' => 'SKILL_IN_USE',
+                ], 409);
+            }
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Database error occurred while deleting skill.',
+                'code' => 'DATABASE_ERROR',
+            ], 500);
+
         } catch (Throwable $e) {
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to delete skill.',
-                'error' => $e->getMessage(),
+                'code' => 'INTERNAL_SERVER_ERROR',
             ], 500);
         }
     }

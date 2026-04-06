@@ -21,10 +21,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('master-schedules/{id}/publish', [MasterScheduleController::class, 'publish']);//publish master schedule
     Route::post('master-schedules/{id}/unpublish', [MasterScheduleController::class, 'unpublish']);//unpublish master schedule
 
-    Route::post('master-schedules/filter', [MasterScheduleController::class, 'filterPublished']);//filter published master schedules
-    Route::post('schedules/filter-employee', [MasterScheduleController::class, 'filterByEmployee']);//filter published schedules by employee id and for all employees
-
-
+ 
     Route::post('scheduling/init', [MasterScheduleController::class, 'initScheduling']);//initialize scheduling for a date range and store
 
 

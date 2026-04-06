@@ -12,17 +12,30 @@ class StoreSkillRequest extends FormRequest
         return true;
     }
 
-    protected function prepareForValidation()
+    protected function prepareForValidation(): void
     {
-        if ($this->has('name')) {
+        $data = [];
 
-            $clean = strtolower(
-                preg_replace('/\s+/', '', trim($this->name))
-            );
+        if ($this->has('name') && $this->input('name') !== null) {
+            $cleanName = trim($this->input('name'));
+            $cleanName = preg_replace('/\s+/', '', $cleanName);
+            $cleanName = ucfirst(strtolower($cleanName));
+            $cleanName = $cleanName === '' ? null : $cleanName;
 
-            $this->merge([
-                'name' => $clean
-            ]);
+            $data['name'] = $cleanName;
+        }
+
+        if ($this->has('description') && $this->input('description') !== null) {
+            $cleanDescription = trim($this->input('description'));
+            $cleanDescription = preg_replace('/\s+/', ' ', $cleanDescription);
+            $cleanDescription = ucwords(strtolower($cleanDescription));
+            $cleanDescription = $cleanDescription === '' ? null : $cleanDescription;
+
+            $data['description'] = $cleanDescription;
+        }
+
+        if (!empty($data)) {
+            $this->merge($data);
         }
     }
 
@@ -34,16 +47,28 @@ class StoreSkillRequest extends FormRequest
                 'string',
                 'max:255',
                 function ($attribute, $value, $fail) {
+                    $normalizedValue = strtolower(str_replace(' ', '', $value));
 
-                    $exists = Skill::whereRaw('LOWER(REPLACE(name, " ", "")) = ?', [$value])
+                    $exists = Skill::query()
+                        ->whereRaw('LOWER(REPLACE(name, " ", "")) = ?', [$normalizedValue])
                         ->exists();
 
                     if ($exists) {
                         $fail('Skill name is already taken.');
                     }
-                }
+                },
             ],
             'description' => ['nullable', 'string'],
+        ];
+    }
+
+    public function messages(): array
+    {
+        return [
+            'name.required' => 'Skill name is required.',
+            'name.string' => 'Skill name must be a string.',
+            'name.max' => 'Skill name may not be greater than 255 characters.',
+            'description.string' => 'Description must be a string.',
         ];
     }
 }

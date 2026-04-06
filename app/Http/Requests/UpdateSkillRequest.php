@@ -14,14 +14,28 @@ class UpdateSkillRequest extends FormRequest
 
     protected function prepareForValidation(): void
     {
-        if ($this->has('name') && $this->input('name') !== null) {
-            $cleanName = strtolower(
-                preg_replace('/\s+/', '', trim($this->input('name')))
-            );
+        $data = [];
 
-            $this->merge([
-                'name' => $cleanName,
-            ]);
+        if ($this->has('name') && $this->input('name') !== null) {
+            $cleanName = trim($this->input('name'));
+            $cleanName = preg_replace('/\s+/', '', $cleanName);
+            $cleanName = ucfirst(strtolower($cleanName));
+            $cleanName = $cleanName === '' ? null : $cleanName;
+
+            $data['name'] = $cleanName;
+        }
+
+        if ($this->has('description') && $this->input('description') !== null) {
+            $cleanDescription = trim($this->input('description'));
+            $cleanDescription = preg_replace('/\s+/', ' ', $cleanDescription);
+            $cleanDescription = ucwords(strtolower($cleanDescription));
+            $cleanDescription = $cleanDescription === '' ? null : $cleanDescription;
+
+            $data['description'] = $cleanDescription;
+        }
+
+        if (!empty($data)) {
+            $this->merge($data);
         }
     }
 
@@ -36,8 +50,10 @@ class UpdateSkillRequest extends FormRequest
                 'string',
                 'max:255',
                 function ($attribute, $value, $fail) use ($skillId) {
+                    $normalizedValue = strtolower(str_replace(' ', '', $value));
+
                     $exists = Skill::query()
-                        ->whereRaw('LOWER(REPLACE(name, " ", "")) = ?', [$value])
+                        ->whereRaw('LOWER(REPLACE(name, " ", "")) = ?', [$normalizedValue])
                         ->where('id', '!=', $skillId)
                         ->exists();
 
