@@ -15,6 +15,10 @@ class EventRouter
         $authPrefix = $devMode
             ? 'auth.testing.v1'
             : 'auth.v1';
+            // ✅ NEW: HIRING SYSTEM
+        $hiringPrefix = $devMode
+            ? 'hiring.testing.v1'
+            : 'hiring.v1';
 
 
         $this->map = [
@@ -27,13 +31,17 @@ class EventRouter
             "{$authPrefix}.store.created" => \App\Services\EventConsume\Handlers\StoreCreatedHandler::class,
             "{$authPrefix}.store.updated" => \App\Services\EventConsume\Handlers\StoreUpdatedHandler::class,
             "{$authPrefix}.store.deleted" => \App\Services\EventConsume\Handlers\StoreDeletedHandler::class,
+             /*
+            |--------------------------------------------------------------------------
+            | HIRING SYSTEM (NEW)
+            |--------------------------------------------------------------------------
+            */
 
-            // ASSIGNMENTS => replicate qa_auditor into user_store_roles
-            "{$authPrefix}.assignment.user_role_store.assigned" => \App\Services\EventConsume\Handlers\UserStoreRoleAssignedHandler::class,
-            "{$authPrefix}.assignment.user_role_store.removed" => \App\Services\EventConsume\Handlers\UserStoreRoleRemovedHandler::class,
-            "{$authPrefix}.assignment.user_role_store.toggled" => \App\Services\EventConsume\Handlers\UserStoreRoleToggledHandler::class,
-            "{$authPrefix}.assignment.user_role_store.bulk_assigned" => \App\Services\EventConsume\Handlers\UserStoreRoleBulkAssignedHandler::class,
-        ];
+            // EMPLOYEES
+            "{$hiringPrefix}.employee.created" => \App\Services\EventConsume\Handlers\EmployeeCreatedHandler::class,
+            "{$hiringPrefix}.employee.updated" => \App\Services\EventConsume\Handlers\EmployeeUpdatedHandler::class,
+            "{$hiringPrefix}.employee.deleted" => \App\Services\EventConsume\Handlers\EmployeeDeletedHandler::class,
+  ];
     }
     public function getResolvedMap(): array
     {
