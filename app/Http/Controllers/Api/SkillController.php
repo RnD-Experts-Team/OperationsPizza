@@ -58,30 +58,7 @@ class SkillController extends Controller
             ], 500);
         }
     }
-
-    public function show(int $id): JsonResponse
-    {
-        try {
-            $skill = $this->skillService->getById($id);
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Skill fetched successfully.',
-                'data' => $skill,
-            ], 200);
-        } catch (ModelNotFoundException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Skill not found.',
-            ], 404);
-        } catch (Throwable $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to fetch skill.',
-                'error' => $e->getMessage(),
-            ], 500);
-        }
-    }
+ 
 
     public function update(UpdateSkillRequest $request, int $id): JsonResponse
     {

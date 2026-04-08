@@ -2,18 +2,28 @@
 
 namespace App\Services\Api;
 
+use App\Models\Employee;
 use App\Models\Skill;
-use Illuminate\Database\Eloquent\Collection;
-
+use Illuminate\Support\Collection;
 class SkillService
 {
     public function getAll(): Collection
     {
-        return Skill::with(['employees' => function ($query) {
-            $query->orderBy('store_id', 'asc');
-        }])
-        ->orderBy('id', 'asc')
-        ->get();
+        return Employee::with('skills')
+            ->get()
+            ->map(function ($employee) {
+                return [
+                    'id' => $employee->id,
+                    'name' => $employee->name,
+                    'skills' => $employee->skills->map(function ($skill) {
+                        return [
+                            'id' => $skill->id,
+                            'name' => $skill->name,
+                            'rating' => $skill->pivot->rating,
+                        ];
+                    }),
+                ];
+            });
     }
     public function getById(int $id): Skill
     {

@@ -9,16 +9,21 @@ class StoreSeeder extends Seeder
 {
     public function run(): void
     {
-        // Store::create([
-        //     'storeNumber' => 1,
-        // ]);
+        Store::create([
+            'id'=>1,
+            'store' => 1,
+        ]);
 
-        // Store::create([
-        //     'storeNumber' => 2,
-        // ]);
+        Store::create([
+            'id'=>2,
 
-        // Store::create([
-        //     'storeNumber' => 3,
-        // ]);
+            'store' => 2,
+        ]);
+
+        Store::create([
+            'id'=>3,
+
+            'store' => 3,
+        ]);
     }
 }

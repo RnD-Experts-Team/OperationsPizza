@@ -8,9 +8,9 @@ use App\Models\AvailabilityTime;
 
 class EmployeeAvailabilityService
 {
-    public function getAll()
+   public function getAll()
     {
-        return Availability::query()
+        $data = Availability::query()
             ->with([
                 'employee',
                 'times' => function ($query) {
@@ -33,6 +33,31 @@ class EmployeeAvailabilityService
             ")
             ->select('availabilities.*')
             ->get();
+
+        return $data->groupBy('employee_id')
+            ->map(function ($items) {
+                $employee = $items->first()->employee;
+
+                return [
+                    'id' => $employee->id,
+                    'name' => $employee->name,
+                    'store_id' => $employee->store_id,
+
+                    'availabilities' => $items->map(function ($availability) {
+                        return [
+                            'id' => $availability->id,
+                            'day_of_week' => $availability->day_of_week,
+                            'times' => $availability->times->map(function ($time) {
+                                return [
+                                    'from' => $time->from,
+                                    'to' => $time->to,
+                                ];
+                            }),
+                        ];
+                    })->values(),
+                ];
+            })
+            ->values();
     }
 
     public function getById(int $id)

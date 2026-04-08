@@ -14,6 +14,13 @@ class UpdateMasterScheduleRequest extends FormRequest
         return true;
     }
 
+    protected function prepareForValidation()
+    {
+        $this->merge([
+            'store_id' => $this->route('store'),
+        ]);
+    }
+
     public function rules(): array
     {
         return [

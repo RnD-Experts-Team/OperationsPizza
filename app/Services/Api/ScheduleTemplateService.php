@@ -15,9 +15,14 @@ use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 class ScheduleTemplateService
 {
 
-    public function getAllPaginated(int $perPage = 10): LengthAwarePaginator
+    public function getAllPaginated(int $perPage = 10, int $storeId = null)
     {
         return ScheduleTemplate::with('details')
+            ->when($storeId, function ($q) use ($storeId) {
+                $q->whereHas('stores', function ($q2) use ($storeId) {
+                    $q2->where('store_id', $storeId);
+                });
+            })
             ->orderBy('id', 'asc')
             ->paginate($perPage);
     }
@@ -116,14 +121,44 @@ class ScheduleTemplateService
             'template_shifts' => $shifts
         ];
     }
-    public function getById(int $id): ScheduleTemplate
+   public function getById(int $id, int $storeId = null): ScheduleTemplate
     {
-        return ScheduleTemplate::with('details')->findOrFail($id);
+        return ScheduleTemplate::with('details')
+            ->when($storeId, function ($q) use ($storeId) {
+                $q->whereHas('stores', function ($q2) use ($storeId) {
+                    $q2->where('store_id', $storeId);
+                });
+            })
+            ->findOrFail($id);
     }
 
-    public function delete(ScheduleTemplate $template): bool
+     public function delete(ScheduleTemplate $template): bool
     {
-        return $template->delete();
+        return $template->delete(); // soft delete
+    }
+    public function forceDelete(int $id, int $storeId = null): bool
+    {
+    $template = ScheduleTemplate::withTrashed()
+        ->when($storeId, function ($q) use ($storeId) {
+            $q->whereHas('stores', function ($q2) use ($storeId) {
+                $q2->where('store_id', $storeId);
+            });
+        })
+        ->findOrFail($id);
+
+    return $template->forceDelete();
+    }
+   public function restore(int $id, int $storeId = null): bool
+    {
+        $template = ScheduleTemplate::withTrashed()
+            ->when($storeId, function ($q) use ($storeId) {
+                $q->whereHas('stores', function ($q2) use ($storeId) {
+                    $q2->where('store_id', $storeId);
+                });
+            })
+            ->findOrFail($id);
+
+        return $template->restore();
     }
     private function mapDayToDate(string $day, string $startDate): string
     {
