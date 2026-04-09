@@ -13,7 +13,10 @@ class Store extends Model
     }
 
  
-
+    public function getRouteKeyName(): string
+    {
+        return 'store';  
+    }
     public function masterSchedules()
     {
         return $this->hasMany(MasterSchedule::class);

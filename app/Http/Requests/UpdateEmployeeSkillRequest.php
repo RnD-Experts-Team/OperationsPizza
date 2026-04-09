@@ -14,23 +14,30 @@ class UpdateEmployeeSkillRequest extends FormRequest
 
     public function rules(): array
     {
-        $id = $this->route('employee_skill') ?? $this->route('id');
+        $id = $this->route('employee_skill');
 
-        // جلب القيم الحالية من DB
+        // 👇 store صار Model
+        $storeId = $this->route('store')->id;
+
+        // جلب القيم الحالية
         $employeeSkill = \App\Models\EmployeeSkill::find($id);
 
         $employeeId = $this->employee_id ?? $employeeSkill?->employee_id;
-        $skillId = $this->skill_id ?? $employeeSkill?->skill_id;
 
         return [
-            'employee_id' => ['sometimes', 'exists:employees,id'],
+            'employee_id' => [
+                'sometimes',
+                Rule::exists('employees', 'id')->where(function ($q) use ($storeId) {
+                    $q->where('store_id', $storeId);
+                }),
+            ],
 
             'skill_id' => [
                 'sometimes',
                 'exists:skills,id',
                 Rule::unique('employee_skills')
-                    ->where(function ($query) use ($employeeId) {
-                        return $query->where('employee_id', $employeeId);
+                    ->where(function ($q) use ($employeeId) {
+                        return $q->where('employee_id', $employeeId);
                     })
                     ->ignore($id),
             ],

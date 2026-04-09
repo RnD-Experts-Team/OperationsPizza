@@ -8,17 +8,7 @@ use Illuminate\Support\Facades\DB;
 
 class DayOffService
 {
-    public function getAll(): Collection
-    {
-        return DayOff::with(['employee', 'acceptedBy'])
-            ->orderBy('employee_id', 'asc')
-            ->orderBy('date', 'asc')
-            ->get();
-    }
-    public function getById(int $id): DayOff
-    {
-        return DayOff::with(['employee', 'acceptedBy'])->findOrFail($id);
-    }
+    
 
      public function create(array $data)
     {
@@ -43,6 +33,27 @@ class DayOffService
         });
     }
 
+    public function getAll(int $storeId): Collection
+    {
+        return DayOff::with(['employee', 'acceptedBy'])
+            ->whereHas('employee', function ($q) use ($storeId) {
+                $q->where('store_id', $storeId);
+            })
+            ->orderBy('employee_id', 'asc')
+            ->orderBy('date', 'asc')
+            ->get();
+    }
+
+    public function getById(int $id, int $storeId): DayOff
+    {
+        return DayOff::with(['employee', 'acceptedBy'])
+            ->where('id', $id)
+            ->whereHas('employee', function ($q) use ($storeId) {
+                $q->where('store_id', $storeId);
+            })
+            ->firstOrFail();
+    }
+
     public function update(DayOff $dayOff, array $data, ?int $userId): DayOff
     {
         $updateData = [];
@@ -50,13 +61,13 @@ class DayOffService
         if (array_key_exists('date', $data)) {
             $updateData['date'] = $data['date'];
         }
+
         if (array_key_exists('managerNote', $data)) {
             $updateData['managerNote'] = $data['managerNote'];
         }
 
         if (array_key_exists('acceptedStatus', $data)) {
             $updateData['acceptedStatus'] = $data['acceptedStatus'];
-
             $updateData['accepted_by'] = $userId;
         }
 

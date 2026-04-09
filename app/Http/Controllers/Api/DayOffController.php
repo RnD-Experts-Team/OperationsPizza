@@ -18,22 +18,7 @@ class DayOffController extends Controller
     {
         $this->service = $service;
     }
-
-    public function index(): JsonResponse
-    {
-        try {
-            return response()->json([
-                'success' => true,
-                'data' => $this->service->getAll()
-            ]);
-        } catch (Throwable $e) {
-            return response()->json([
-                'message' => 'Error fetching data',
-                'error' => $e->getMessage()
-            ], 500);
-        }
-    }
-
+ 
     public function store(StoreDayOffRequest $request): JsonResponse
     {
         try {
@@ -53,24 +38,27 @@ class DayOffController extends Controller
         }
     }
 
-    public function show(int $id): JsonResponse
+    public function index(int $store): JsonResponse
     {
         try {
             return response()->json([
                 'success' => true,
-                'data' => $this->service->getById($id)
+                'data' => $this->service->getAll($store)
             ]);
-        } catch (ModelNotFoundException) {
-            return response()->json(['message' => 'Not found'], 404);
         } catch (Throwable $e) {
-            return response()->json(['error' => $e->getMessage()], 500);
+            return response()->json([
+                'message' => 'Error fetching data',
+                'error' => $e->getMessage()
+            ], 500);
         }
     }
 
-    public function update(UpdateDayOffRequest $request, int $id): JsonResponse
+   
+
+    public function update(UpdateDayOffRequest $request, int $store, int $day_off): JsonResponse
     {
-         try {
-            $record = $this->service->getById($id);
+        try {
+            $record = $this->service->getById($day_off, $store);
 
             $updated = $this->service->update(
                 $record,
@@ -93,10 +81,10 @@ class DayOffController extends Controller
         }
     }
 
-    public function destroy(int $id): JsonResponse
+    public function destroy(int $store, int $day_off): JsonResponse
     {
         try {
-            $record = $this->service->getById($id);
+            $record = $this->service->getById($day_off, $store);
             $this->service->delete($record);
 
             return response()->json([
@@ -112,4 +100,9 @@ class DayOffController extends Controller
             ], 500);
         }
     }
+    
+
+    
+
+    
 }

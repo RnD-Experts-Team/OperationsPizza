@@ -4,6 +4,7 @@ namespace App\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
+use App\Models\DayOff;
 
 class UpdateDayOffRequest extends FormRequest
 {
@@ -23,7 +24,7 @@ class UpdateDayOffRequest extends FormRequest
 
         $this->merge([
             'acceptedStatus' => is_string($this->acceptedStatus)
-                ? strtolower($this->acceptedStatus)
+                ? strtolower(trim($this->acceptedStatus))
                 : $this->acceptedStatus,
 
             'managerNote' => $managerNote,
@@ -32,9 +33,37 @@ class UpdateDayOffRequest extends FormRequest
 
     public function rules(): array
     {
+        $dayOffId = $this->route('day_off');
+        $storeId = $this->route('store');
+
         return [
-            'date' => ['sometimes', 'date'],
+            'date' => [
+                'sometimes',
+                'date',
+                function ($attribute, $value, $fail) use ($dayOffId, $storeId) {
+                    $dayOff = DayOff::where('id', $dayOffId)
+                        ->whereHas('employee', function ($q) use ($storeId) {
+                            $q->where('store_id', $storeId);
+                        })
+                        ->first();
+
+                    if (!$dayOff) {
+                        return;
+                    }
+
+                    $exists = DayOff::where('employee_id', $dayOff->employee_id)
+                        ->where('date', $value)
+                        ->where('id', '!=', $dayOffId)
+                        ->exists();
+
+                    if ($exists) {
+                        $fail('This employee already has a day off request on this date.');
+                    }
+                }
+            ],
+
             'managerNote' => ['required', 'string'],
+
             'acceptedStatus' => [
                 'required',
                 Rule::in(['pending', 'approved', 'rejected'])

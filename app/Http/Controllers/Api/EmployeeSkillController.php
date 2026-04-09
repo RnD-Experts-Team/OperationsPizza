@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\StoreEmployeeSkillRequest;
 use App\Http\Requests\UpdateEmployeeSkillRequest;
+use App\Models\Store;
 use App\Services\Api\EmployeeSkillService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
@@ -19,10 +20,10 @@ class EmployeeSkillController extends Controller
         $this->service = $service;
     }
 
-    public function index(): JsonResponse
+    public function index(Store $store): JsonResponse
     {
         try {
-            $data = $this->service->getAll();
+            $data = $this->service->getAll($store->id);
 
             return response()->json([
                 'success' => true,
@@ -37,10 +38,10 @@ class EmployeeSkillController extends Controller
         }
     }
 
-    public function store(StoreEmployeeSkillRequest $request): JsonResponse
+    public function store(StoreEmployeeSkillRequest $request, Store $store): JsonResponse
     {
         try {
-            $data = $this->service->create($request->validated());
+            $data = $this->service->create($request->validated(), $store->id);
 
             return response()->json([
                 'success' => true,
@@ -56,10 +57,10 @@ class EmployeeSkillController extends Controller
         }
     }
 
-    public function show(int $id): JsonResponse
+    public function show(Store $store, int $employee_skill): JsonResponse
     {
         try {
-            $data = $this->service->getById($id);
+            $data = $this->service->getById($employee_skill, $store->id);
 
             return response()->json([
                 'success' => true,
@@ -79,10 +80,10 @@ class EmployeeSkillController extends Controller
         }
     }
 
-    public function update(UpdateEmployeeSkillRequest $request, int $id): JsonResponse
+    public function update(UpdateEmployeeSkillRequest $request, Store $store, int $employee_skill): JsonResponse
     {
         try {
-            $record = $this->service->getById($id);
+            $record = $this->service->getById($employee_skill, $store->id);
             $updated = $this->service->update($record, $request->validated());
 
             return response()->json([
@@ -104,10 +105,10 @@ class EmployeeSkillController extends Controller
         }
     }
 
-    public function destroy(int $id): JsonResponse
+    public function destroy(Store $store, int $employee_skill): JsonResponse
     {
         try {
-            $record = $this->service->getById($id);
+            $record = $this->service->getById($employee_skill, $store->id);
             $this->service->delete($record);
 
             return response()->json([
