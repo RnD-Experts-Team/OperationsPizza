@@ -9,3 +9,5 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('skills/trashed/all', [SkillController::class, 'trashed']);
     Route::post('skills/{id}/restore', [SkillController::class, 'restore']);
 });
+
+
