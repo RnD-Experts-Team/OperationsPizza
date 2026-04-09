@@ -9,6 +9,7 @@ use App\Http\Controllers\Controller;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use App\Http\Requests\StoreDayOffRequest;
 use App\Http\Requests\UpdateDayOffRequest;
+use App\Models\Store;
 
 class DayOffController extends Controller
 {
@@ -38,12 +39,12 @@ class DayOffController extends Controller
         }
     }
 
-    public function index(int $store): JsonResponse
+    public function index(Store $store): JsonResponse
     {
         try {
             return response()->json([
                 'success' => true,
-                'data' => $this->service->getAll($store)
+                'data' => $this->service->getAll($store->id)
             ]);
         } catch (Throwable $e) {
             return response()->json([
@@ -55,10 +56,10 @@ class DayOffController extends Controller
 
    
 
-    public function update(UpdateDayOffRequest $request, int $store, int $day_off): JsonResponse
+    public function update(UpdateDayOffRequest $request, Store $store, int $day_off): JsonResponse
     {
         try {
-            $record = $this->service->getById($day_off, $store);
+            $record = $this->service->getById($day_off, $store->id);
 
             $updated = $this->service->update(
                 $record,
@@ -81,10 +82,10 @@ class DayOffController extends Controller
         }
     }
 
-    public function destroy(int $store, int $day_off): JsonResponse
+    public function destroy(Store $store, int $day_off): JsonResponse
     {
         try {
-            $record = $this->service->getById($day_off, $store);
+            $record = $this->service->getById($day_off, $store->id);
             $this->service->delete($record);
 
             return response()->json([

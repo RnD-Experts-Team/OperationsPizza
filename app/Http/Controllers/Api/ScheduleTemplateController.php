@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\LoadTemplateRequest;
 use App\Http\Requests\SaveTemplateRequest;
+use App\Models\Store;
 use App\Services\Api\ScheduleTemplateService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
@@ -16,12 +17,12 @@ class ScheduleTemplateController extends Controller
 {
     public function __construct(private ScheduleTemplateService $service) {}
 
-    public function AllTemplate(Request $request, int $store): JsonResponse
+    public function AllTemplate(Request $request, Store $store): JsonResponse
     {
         try {
             $perPage = min((int) $request->get('per_page', 10), 50);
 
-            $data = $this->service->getAllPaginated($perPage, $store);
+            $data = $this->service->getAllPaginated($perPage, $store->id);
 
             return response()->json([
                 'success' => true,
@@ -38,11 +39,11 @@ class ScheduleTemplateController extends Controller
         }
     }
 
-    public function saveTemplate(SaveTemplateRequest $request, int $store): JsonResponse
+    public function saveTemplate(SaveTemplateRequest $request, Store $store): JsonResponse
     {
         try {
             $payload = array_merge($request->validated(), [
-                'store_id' => $store
+                'store_id' => $store->id
             ]);
 
             $template = $this->service->saveTemplate(
@@ -74,11 +75,11 @@ class ScheduleTemplateController extends Controller
         }
     }
 
-    public function loadTemplate(LoadTemplateRequest $request, int $store): JsonResponse
+    public function loadTemplate(LoadTemplateRequest $request, Store $store): JsonResponse
     {
         try {
             $payload = array_merge($request->validated(), [
-                'store_id' => $store
+                'store_id' => $store->id
             ]);
 
             $data = $this->service->loadTemplatePreview($payload);
@@ -96,10 +97,10 @@ class ScheduleTemplateController extends Controller
         }
     }
 
-    public function showTemplate(int $store, int $id): JsonResponse
+    public function showTemplate(Store $store, int $id): JsonResponse
     {
         try {
-            $template = $this->service->getById($id, $store);
+            $template = $this->service->getById($id, $store->id);
 
             return response()->json([
                 'success' => true,
@@ -115,10 +116,10 @@ class ScheduleTemplateController extends Controller
         }
     }
 
-    public function DeleteTemplate(int $store, int $id): JsonResponse
+    public function DeleteTemplate(Store $store, int $id): JsonResponse
     {
         try {
-            $template = $this->service->getById($id, $store);
+            $template = $this->service->getById($id, $store->id);
 
             $this->service->delete($template);
 
@@ -135,10 +136,10 @@ class ScheduleTemplateController extends Controller
         }
     }
 
-    public function forceDelete(int $store, int $id): JsonResponse
+    public function forceDelete(Store $store, int $id): JsonResponse
     {
         try {
-            $this->service->forceDelete($id, $store);
+            $this->service->forceDelete($id, $store->id);
 
             return response()->json([
                 'success' => true,
@@ -153,10 +154,10 @@ class ScheduleTemplateController extends Controller
         }
     }
 
-    public function restore(int $store, int $id): JsonResponse
+    public function restore(Store $store, int $id): JsonResponse
     {
         try {
-            $this->service->restore($id, $store);
+            $this->service->restore($id, $store->id);
 
             return response()->json([
                 'success' => true,

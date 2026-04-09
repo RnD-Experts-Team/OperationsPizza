@@ -5,6 +5,7 @@ namespace App\Http\Requests;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 use App\Models\DayOff;
+use App\Models\Store;
 
 class UpdateDayOffRequest extends FormRequest
 {
@@ -34,7 +35,11 @@ class UpdateDayOffRequest extends FormRequest
     public function rules(): array
     {
         $dayOffId = $this->route('day_off');
-        $storeId = $this->route('store');
+        $storeParam = $this->route('store');
+
+        $storeId = $storeParam instanceof Store
+            ? $storeParam->id
+            : Store::where('store', $storeParam)->value('id');
 
         return [
             'date' => [
