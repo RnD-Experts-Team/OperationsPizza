@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 class Employee extends Model
 {
     protected $fillable = [
-        'store_id','name','phone','email','hire_date','status'
+        'id','store_id','name','phone','email','hire_date','status'
     ];
 
     public function store()

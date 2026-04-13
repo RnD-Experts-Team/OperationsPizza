@@ -3,28 +3,46 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
- use App\Http\Requests\StoreMasterScheduleRequest;
+use App\Http\Requests\StoreMasterScheduleRequest;
 use App\Http\Requests\UpdateMasterScheduleRequest;
- use App\Services\Api\MasterScheduleService;
+use App\Services\Api\MasterScheduleService;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
 use Throwable;
- use App\Http\Requests\InitSchedulingRequest;
+use App\Http\Requests\InitSchedulingRequest;
 use App\Http\Requests\CopyPreviousWeekRequest;
- 
+use App\Models\Store;
+use Illuminate\Support\Facades\Log;
+
 class MasterScheduleController extends Controller
 {
     public function __construct(private MasterScheduleService $service) {}
-    
 
-    public function index(Request $request): JsonResponse
+    public function getPublishedSchedules(Store $store): JsonResponse
+    {
+        try {
+            $data = $this->service->getPublishedSchedules($store->id);
+
+            return response()->json([
+                'success' => true,
+                'data' => $data
+            ]);
+        } catch (Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch published schedules.'
+            ], 500);
+        }
+    }
+
+    public function index(Request $request, Store $store): JsonResponse
     {
         try {
             $perPage = min((int) $request->get('per_page', 10), 50);
 
-            $data = $this->service->getAllPaginated($perPage);
+            $data = $this->service->getAllPaginated($perPage, $store->id);
 
             return response()->json([
                 'success' => true,
@@ -33,24 +51,25 @@ class MasterScheduleController extends Controller
         } catch (Throwable $e) {
             return response()->json([
                 'message' => 'Failed to fetch data',
-                'error' => $e->getMessage(),
             ], 500);
         }
     }
 
-    public function store(StoreMasterScheduleRequest $request): JsonResponse
+    public function store(StoreMasterScheduleRequest $request, Store $store): JsonResponse
     {
         try {
-            $record = $this->service->storeWithSchedules(
-                $request->validated(),
-                auth()->id()
-            );
+            $payload = array_merge($request->validated(), [
+                'store_id' => $store->id
+            ]);
+
+            $record = $this->service->storeWithSchedules($payload, auth()->id());
 
             return response()->json([
                 'success' => true,
                 'message' => 'Created successfully',
                 'data' => $record,
             ], 201);
+
         } catch (ValidationException $e) {
             return response()->json([
                 'message' => $e->errors(),
@@ -58,15 +77,14 @@ class MasterScheduleController extends Controller
         } catch (Throwable $e) {
             return response()->json([
                 'message' => 'Creation failed',
-                'error' => $e->getMessage(),
             ], 500);
         }
     }
 
-    public function show(int $id): JsonResponse
+    public function show(Store $store, int $id): JsonResponse
     {
         try {
-            $record = $this->service->getById($id);
+            $record = $this->service->getById($id, $store->id);
 
             return response()->json([
                 'success' => true,
@@ -79,14 +97,18 @@ class MasterScheduleController extends Controller
         }
     }
 
-    public function update(UpdateMasterScheduleRequest $request, int $id): JsonResponse
+    public function update(UpdateMasterScheduleRequest $request, Store $store, int $id): JsonResponse
     {
         try {
-            $record = $this->service->getById($id);
+            $record = $this->service->getById($id, $store->id);
+
+            $payload = array_merge($request->validated(), [
+                'store_id' => $store->id
+            ]);
 
             $updated = $this->service->updateWithSchedules(
                 $record,
-                $request->validated(),
+                $payload,
                 auth()->id()
             );
 
@@ -95,6 +117,7 @@ class MasterScheduleController extends Controller
                 'message' => 'Updated successfully',
                 'data' => $updated,
             ]);
+
         } catch (ModelNotFoundException) {
             return response()->json([
                 'message' => 'Not found',
@@ -106,20 +129,16 @@ class MasterScheduleController extends Controller
         } catch (Throwable $e) {
             return response()->json([
                 'message' => 'Update failed',
-                'error' => $e->getMessage(),
             ], 500);
         }
     }
 
-
-
-
-    public function publish(int $id): JsonResponse
+    public function publish(Store $store, int $id): JsonResponse
     {
         try {
-            $record = $this->service->getById($id);
+            $record = $this->service->getById($id, $store->id);
 
-            $published = $this->service->publish($record,auth()->id());
+            $published = $this->service->publish($record, auth()->id());
 
             return response()->json([
                 'success' => true,
@@ -128,26 +147,18 @@ class MasterScheduleController extends Controller
             ]);
 
         } catch (ModelNotFoundException) {
-            return response()->json([
-                'message' => 'Not found',
-            ], 404);
-
+            return response()->json(['message' => 'Not found'], 404);
         } catch (ValidationException $e) {
-            return response()->json([
-                'message' => $e->errors(),
-            ], 422);
-
+            return response()->json(['message' => $e->errors()], 422);
         } catch (Throwable $e) {
-            return response()->json([
-                'message' => 'Publish failed',
-                'error' => $e->getMessage(),
-            ], 500);
+            return response()->json(['message' => 'Publish failed'], 500);
         }
     }
-    public function unpublish(int $id): JsonResponse
+
+    public function unpublish(Store $store, int $id): JsonResponse
     {
         try {
-            $record = $this->service->getById($id);
+            $record = $this->service->getById($id, $store->id);
 
             $unpublished = $this->service->unpublish($record);
 
@@ -158,26 +169,18 @@ class MasterScheduleController extends Controller
             ]);
 
         } catch (ModelNotFoundException) {
-            return response()->json([
-                'message' => 'Not found',
-            ], 404);
-
+            return response()->json(['message' => 'Not found'], 404);
         } catch (ValidationException $e) {
-            return response()->json([
-                'message' => $e->errors(),
-            ], 422);
-
+            return response()->json(['message' => $e->errors()], 422);
         } catch (Throwable $e) {
-            return response()->json([
-                'message' => 'Unpublish failed',
-                'error' => $e->getMessage(),
-            ], 500);
+            return response()->json(['message' => 'Unpublish failed'], 500);
         }
     }
-    public function trashed(): JsonResponse
+
+    public function trashed(Store $store): JsonResponse
     {
         try {
-            $data = $this->service->getTrashed();
+            $data = $this->service->getTrashed($store->id);
 
             return response()->json([
                 'success' => true,
@@ -187,17 +190,14 @@ class MasterScheduleController extends Controller
         } catch (Throwable $e) {
             return response()->json([
                 'message' => 'Failed to fetch trashed records',
-                'error' => $e->getMessage(),
             ], 500);
         }
     }
 
-  
-
-    public function softDelete(int $id): JsonResponse
+    public function softDelete(Store $store, int $id): JsonResponse
     {
         try {
-            $record = $this->service->getById($id);
+            $record = $this->service->getById($id, $store->id);
 
             $this->service->delete($record);
 
@@ -205,21 +205,18 @@ class MasterScheduleController extends Controller
                 'success' => true,
                 'message' => 'Deleted successfully',
             ]);
+
         } catch (ModelNotFoundException) {
-            return response()->json([
-                'message' => 'Not found',
-            ], 404);
+            return response()->json(['message' => 'Not found'], 404);
         } catch (Throwable $e) {
-            return response()->json([
-                'message' => 'Delete failed',
-                'error' => $e->getMessage(),
-            ], 500);
+            return response()->json(['message' => 'Delete failed'], 500);
         }
     }
-    public function restore(int $id): JsonResponse
+
+    public function restore(Store $store, int $id): JsonResponse
     {
         try {
-            $record = $this->service->restore($id);
+            $record = $this->service->restore($id, $store->id);
 
             return response()->json([
                 'success' => true,
@@ -228,21 +225,16 @@ class MasterScheduleController extends Controller
             ]);
 
         } catch (ModelNotFoundException) {
-            return response()->json([
-                'message' => 'Not found',
-            ], 404);
-
+            return response()->json(['message' => 'Not found'], 404);
         } catch (Throwable $e) {
-            return response()->json([
-                'message' => 'Restore failed',
-                'error' => $e->getMessage(),
-            ], 500);
+            return response()->json(['message' => 'Restore failed'], 500);
         }
     }
-    public function forceDelete(int $id): JsonResponse
+
+    public function forceDelete(Store $store, int $id): JsonResponse
     {
         try {
-            $this->service->forceDelete($id);
+            $this->service->forceDelete($id, $store->id);
 
             return response()->json([
                 'success' => true,
@@ -250,21 +242,16 @@ class MasterScheduleController extends Controller
             ]);
 
         } catch (ModelNotFoundException) {
-            return response()->json([
-                'message' => 'Not found',
-            ], 404);
-
+            return response()->json(['message' => 'Not found'], 404);
         } catch (Throwable $e) {
-            return response()->json([
-                'message' => 'Force delete failed',
-                'error' => $e->getMessage(),
-            ], 500);
+            return response()->json(['message' => 'Force delete failed'], 500);
         }
     }
-    public function deleteSchedule(int $id): JsonResponse
+
+    public function deleteSchedule(Store $store, int $id): JsonResponse
     {
         try {
-            $this->service->deleteSchedule($id);
+            $this->service->deleteSchedule($id, $store->id);
 
             return response()->json([
                 'success' => true,
@@ -272,26 +259,18 @@ class MasterScheduleController extends Controller
             ]);
 
         } catch (ModelNotFoundException) {
-            return response()->json([
-                'message' => 'Schedule not found',
-            ], 404);
-
+            return response()->json(['message' => 'Schedule not found'], 404);
         } catch (ValidationException $e) {
-            return response()->json([
-                'message' => $e->errors(),
-            ], 422);
-
+            return response()->json(['message' => $e->errors()], 422);
         } catch (Throwable $e) {
-            return response()->json([
-                'message' => 'Delete failed',
-                'error' => $e->getMessage(),
-            ], 500);
+            return response()->json(['message' => 'Delete failed'], 500);
         }
     }
-    public function restoreSchedule(int $id): JsonResponse
+
+    public function restoreSchedule(Store $store, int $id): JsonResponse
     {
         try {
-            $record = $this->service->restoreSchedule($id);
+            $record = $this->service->restoreSchedule($id,$store->id);
 
             return response()->json([
                 'success' => true,
@@ -300,21 +279,16 @@ class MasterScheduleController extends Controller
             ]);
 
         } catch (ModelNotFoundException) {
-            return response()->json([
-                'message' => 'Schedule not found',
-            ], 404);
-
+            return response()->json(['message' => 'Schedule not found'], 404);
         } catch (Throwable $e) {
-            return response()->json([
-                'message' => 'Restore failed',
-                'error' => $e->getMessage(),
-            ], 500);
+            return response()->json(['message' => 'Restore failed'], 500);
         }
     }
-    public function forceDeleteSchedule(int $id): JsonResponse
+
+    public function forceDeleteSchedule(Store $store, int $id): JsonResponse
     {
         try {
-            $this->service->forceDeleteSchedule($id);
+            $this->service->forceDeleteSchedule($id,$store->id);
 
             return response()->json([
                 'success' => true,
@@ -322,51 +296,44 @@ class MasterScheduleController extends Controller
             ]);
 
         } catch (ModelNotFoundException) {
-            return response()->json([
-                'message' => 'Schedule not found',
-            ], 404);
-
+            return response()->json(['message' => 'Schedule not found'], 404);
         } catch (ValidationException $e) {
-            return response()->json([
-                'message' => $e->errors(),
-            ], 422);
-
+            return response()->json(['message' => $e->errors()], 422);
         } catch (Throwable $e) {
-            return response()->json([
-                'message' => 'Force delete failed',
-                'error' => $e->getMessage(),
-            ], 500);
+            return response()->json(['message' => 'Force delete failed'], 500);
         }
     }
 
-
-    public function initScheduling(InitSchedulingRequest $request): JsonResponse
+    public function initScheduling(InitSchedulingRequest $request, Store $store): JsonResponse
     {
         try {
-            $data = $this->service->initScheduling($request->validated());
+            $data = $this->service->initScheduling(
+                array_merge($request->validated(), [
+                    'store_id' => $store->id
+                ])
+            );
 
             return response()->json([
                 'success' => true,
                 'message' => 'Scheduling initialized successfully',
                 'data' => $data,
-            ], 200);
+            ]);
 
         } catch (Throwable $e) {
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to initialize scheduling',
-                'error' => $e->getMessage(),
             ], 500);
         }
     }
 
-
-
-    public function copyWeek(CopyPreviousWeekRequest $request): JsonResponse
+    public function copyWeek(CopyPreviousWeekRequest $request, Store $store): JsonResponse
     {
         try {
             $data = $this->service->copySchedule(
-                $request->validated(),
+                array_merge($request->validated(), [
+                    'store_id' => $store->id
+                ]),
                 auth()->id()
             );
 
@@ -376,17 +343,13 @@ class MasterScheduleController extends Controller
                 'data' => $data
             ]);
 
-        } catch (\Illuminate\Validation\ValidationException $e) {
-
+        } catch (ValidationException $e) {
             return response()->json([
                 'message' => $e->errors()
             ], 422);
-
-        } catch (\Throwable $e) {
-
+        } catch (Throwable $e) {
             return response()->json([
-                'message' => 'Failed to copy schedule',
-                'error' => $e->getMessage()
+                'message' => 'Failed to copy schedule'
             ], 500);
         }
     }

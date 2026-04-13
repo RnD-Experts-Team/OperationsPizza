@@ -7,20 +7,50 @@ use Illuminate\Database\Eloquent\Collection;
 
 class EmployeeSkillService
 {
-    public function getAll(): Collection
+    public function getAll(int $storeId)
+    {
+        $records = EmployeeSkill::with(['employee', 'skill'])
+            ->whereHas('employee', function ($q) use ($storeId) {
+                $q->where('store_id', $storeId);
+            })
+            ->get();
+
+        return $records->groupBy('employee_id')->map(function ($items) {
+            $employee = $items->first()->employee;
+
+            return [
+                'employee_id' => $employee->id,
+                'employee_name' => $employee->name,
+                'email' => $employee->email,
+                'phone' => $employee->phone,
+
+                'skills' => $items->map(function ($item) {
+                    return [
+                        'skill_id' => $item->skill->id,
+                        'skill_name' => $item->skill->name,
+                        'rating' => $item->rating,
+                    ];
+                })->values()
+            ];
+        })->values();
+    }
+
+    public function getById(int $id, int $storeId): EmployeeSkill
     {
         return EmployeeSkill::with(['employee', 'skill'])
-            ->orderBy('employee_id', 'asc')
-            ->get();
+            ->where('id', $id)
+            ->whereHas('employee', function ($q) use ($storeId) {
+                $q->where('store_id', $storeId);
+            })
+            ->firstOrFail();
     }
 
-    public function getById(int $id): EmployeeSkill
+    public function create(array $data, int $storeId): EmployeeSkill
     {
-        return EmployeeSkill::with(['employee', 'skill'])->findOrFail($id);
-    }
+        \App\Models\Employee::where('id', $data['employee_id'])
+            ->where('store_id', $storeId)
+            ->firstOrFail();
 
-    public function create(array $data): EmployeeSkill
-    {
         return EmployeeSkill::create($data);
     }
 

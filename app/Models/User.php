@@ -19,18 +19,16 @@ class User extends Authenticatable
     use HasFactory, Notifiable,HasApiTokens;
 
 
-    /**
-     * Get the attributes that should be cast.
-     *
-     * @return array<string, string>
-     */
-    protected function casts(): array
-    {
-        return [
-            'email_verified_at' => 'datetime',
-            'password' => 'hashed',
-        ];
-    }
+    protected $fillable = [
+        'id',
+        'name',
+        'email',
+    ];
+
+    protected $hidden = [
+        'remember_token',
+    ];
+
     public function createdSchedules()
     {
         return $this->hasMany(MasterSchedule::class, 'created_by');

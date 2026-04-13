@@ -15,29 +15,22 @@ class StoreEmployeeSkillRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'employee_id' => ['required', 'exists:employees,id'],
-            'skill_id' => ['required', 'exists:skills,id'],
+           'employee_id' => [
+            'required',
+                Rule::exists('employees', 'id')->where(function ($query) {
+                    $query->where('store_id', $this->route('store')->id);
+                }),
+              ],
 
-            'rating' => ['required', 'numeric', 'min:0', 'max:100'],
-
-            // منع التكرار
             'skill_id' => [
                 'required',
                 'exists:skills,id',
-                Rule::unique('employee_skills')
-                    ->where(function ($query) {
-                        return $query->where('employee_id', $this->employee_id);
-                    }),
+                Rule::unique('employee_skills')->where(function ($q) {
+                    return $q->where('employee_id', $this->employee_id);
+                }),
             ],
-        ];
-    }
 
-    public function messages(): array
-    {
-        return [
-            'rating.min' => 'Rating must be at least 0',
-            'rating.max' => 'Rating must not exceed 100',
-            'skill_id.unique' => 'This employee already has this skill',
+            'rating' => ['required', 'numeric', 'min:0', 'max:100'],
         ];
     }
 }

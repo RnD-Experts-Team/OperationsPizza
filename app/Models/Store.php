@@ -5,7 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 class Store extends Model
 {
-    protected $fillable = ['storeNumber'];
+    protected $fillable = ['storeNumber','id'];
 
     public function employees()
     {
@@ -13,7 +13,10 @@ class Store extends Model
     }
 
  
-
+    public function getRouteKeyName(): string
+    {
+        return 'store';  
+    }
     public function masterSchedules()
     {
         return $this->hasMany(MasterSchedule::class);

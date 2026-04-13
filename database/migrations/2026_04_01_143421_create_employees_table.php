@@ -12,7 +12,7 @@ return new class extends Migration
     public function up(): void
     {
         Schema::create('employees', function (Blueprint $table) {
-        $table->id();
+        $table->unsignedBigInteger('id')->primary();
         $table->foreignId('store_id')->constrained()->restrictOnDelete();
 
         $table->string('name')->nullable();
@@ -20,7 +20,7 @@ return new class extends Migration
         $table->string('email')->nullable();
         $table->date('hire_date')->nullable();
 
-        $table->enum('status', ['terminated', 'new hire', 'old hire']);
+        $table->enum('status', ['termination', 'resignation', 'hired','OJE']);
 
         $table->timestamps();
      });

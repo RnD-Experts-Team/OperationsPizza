@@ -6,6 +6,7 @@ use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 use App\Models\Availability;
 use App\Models\AvailabilityTime;
+use App\Models\Store; // 👈 أضفناه فقط
 
 class StoreEmployeeAvailabilityRequest extends FormRequest
 {
@@ -25,9 +26,20 @@ class StoreEmployeeAvailabilityRequest extends FormRequest
 
     public function rules(): array
     {
+        // 👇 حل المشكلة هنا فقط
+        $storeParam = $this->route('store');
+
+        $storeId = $storeParam instanceof Store
+            ? $storeParam->id
+            : Store::where('store', $storeParam)->value('id');
+
         return [
-            // Availability validation
-            'employee_id' => ['required', 'exists:employees,id'],
+            'employee_id' => [
+                'required',
+                Rule::exists('employees', 'id')->where(function ($query) use ($storeId) {
+                    $query->where('store_id', $storeId);
+                }),
+            ],
 
             'day_of_week' => [
                 'required',
@@ -47,9 +59,7 @@ class StoreEmployeeAvailabilityRequest extends FormRequest
                     }),
             ],
 
-            // Times validation
             'times' => ['required', 'array', 'min:1'],
-
             'times.*.from' => ['required', 'date_format:H:i'],
             'times.*.to'   => ['required', 'date_format:H:i'],
         ];
@@ -59,7 +69,7 @@ class StoreEmployeeAvailabilityRequest extends FormRequest
     {
         return [
             'employee_id.required' => 'Employee id is required.',
-            'employee_id.exists' => 'Selected employee does not exist.',
+            'employee_id.exists' => 'Selected employee does not belong to this store or does not exist.',
             'day_of_week.required' => 'Day of week is required.',
             'day_of_week.in' => 'Day of week is invalid.',
             'day_of_week.unique' => 'This day already exists for this employee.',
@@ -76,16 +86,11 @@ class StoreEmployeeAvailabilityRequest extends FormRequest
     public function withValidator($validator)
     {
         $validator->after(function ($validator) {
-
             if (!$this->times || !is_array($this->times)) {
                 return;
             }
 
-            // =========================
-            // 1. تحقق كل عنصر (from < to + DB overlap)
-            // =========================
             foreach ($this->times as $index => $time) {
-
                 $from = $time['from'] ?? null;
                 $to   = $time['to'] ?? null;
 
@@ -93,7 +98,6 @@ class StoreEmployeeAvailabilityRequest extends FormRequest
                     continue;
                 }
 
-                // from < to
                 if ($from >= $to) {
                     $validator->errors()->add(
                         "times.$index.from",
@@ -106,7 +110,6 @@ class StoreEmployeeAvailabilityRequest extends FormRequest
                     continue;
                 }
 
-                // نفس logic القديم (DB overlap)
                 $availabilities = Availability::where('employee_id', $this->employee_id)
                     ->where('day_of_week', $this->day_of_week)
                     ->pluck('id');
@@ -130,14 +133,10 @@ class StoreEmployeeAvailabilityRequest extends FormRequest
                 }
             }
 
-            // =========================
-            // 2. تحقق التداخل داخل نفس request
-            // =========================
             $count = count($this->times);
 
             for ($i = 0; $i < $count; $i++) {
                 for ($j = $i + 1; $j < $count; $j++) {
-
                     $a = $this->times[$i];
                     $b = $this->times[$j];
 

@@ -11,11 +11,9 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('stores', function (Blueprint $table) {
-        $table->unsignedBigInteger('id')->primary();
-        $table->string('store');
-        $table->timestamps();
-         });
+        Schema::table('schedule_templates', function (Blueprint $table) {
+        $table->softDeletes();
+          });
     }
 
     /**
@@ -23,6 +21,8 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::dropIfExists('stores');
+        Schema::table('schedule_templates', function (Blueprint $table) {
+            //
+        });
     }
 };

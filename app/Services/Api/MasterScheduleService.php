@@ -20,25 +20,19 @@ class MasterScheduleService
     {
         $this->service = $service;
     }
-    public function initScheduling(array $data): array
+   public function initScheduling(array $data): array
     {
-        // 🔥 1. Published Schedule (باستخدام الفلاتر)
         $publishedSchedule = $this->service
             ->getPublishedFlexibleQuery($data)
             ->with([
                 'schedules' => function ($query) use ($data) {
-
-                    // 🎯 فلتر الموظف
-                    $this->service
-                        ->filterSchedulesByEmployeeQuery($query, $data);
-
+                    $this->service->filterSchedulesByEmployeeQuery($query, $data);
                     $query->with(['employee', 'skill']);
                 }
             ])
             ->latest('start_date')
             ->first();
 
-        // 🔥 2. Days Off
         $daysOff = DayOff::with('employee')
             ->whereHas('employee', function ($query) use ($data) {
                 $query->where('store_id', $data['store_id']);
@@ -47,18 +41,16 @@ class MasterScheduleService
             ->where('acceptedStatus', 'approved')
             ->get();
 
-        // 🔥 3. Employees
         $employees = Employee::with([
-        'availability.times',
-        'skills'
-            ])
+            'availability.times',
+            'skills'
+        ])
             ->where('store_id', $data['store_id'])
             ->when(isset($data['employee_id']) && $data['employee_id'] !== null, function ($query) use ($data) {
                 $query->where('id', $data['employee_id']);
             })
             ->get();
 
-        // 🔥 4. Skills
         $skills = Skill::get();
 
         return [
@@ -71,18 +63,24 @@ class MasterScheduleService
     
     
 
-   
-    public function getAllPaginated(int $perPage = 10)
+     public function getAllPaginated(int $perPage = 10, int $storeId = null)
     {
         return MasterSchedule::with('schedules')
+            ->when($storeId, function ($q) use ($storeId) {
+                $q->where('store_id', $storeId);
+            })
             ->orderBy('store_id')
             ->orderBy('start_date')
             ->paginate($perPage);
     }
 
-    public function getById(int $id): MasterSchedule
+    public function getById(int $id, int $storeId = null): MasterSchedule
     {
-        return MasterSchedule::with('schedules')->findOrFail($id);
+        return MasterSchedule::with('schedules')
+            ->when($storeId, function ($q) use ($storeId) {
+                $q->where('store_id', $storeId);
+            })
+            ->findOrFail($id);
     }
 
     public function storeWithSchedules(array $data, int $userId): MasterSchedule
@@ -285,11 +283,14 @@ class MasterScheduleService
             $master->delete(); // soft delete master
         });
     }
-     public function restore(int $id): MasterSchedule
+    public function restore(int $id, int $storeId = null): MasterSchedule
     {
-        $master = MasterSchedule::withTrashed()->findOrFail($id);
+        $master = MasterSchedule::withTrashed()
+            ->when($storeId, function ($q) use ($storeId) {
+                $q->where('store_id', $storeId);
+            })
+            ->findOrFail($id);
 
-        // 🔥 تحقق: لازم يكون محذوف
         if (!$master->trashed()) {
             throw ValidationException::withMessages([
                 'restore' => ['Record is not deleted.']
@@ -303,11 +304,14 @@ class MasterScheduleService
 
         return $master->load('schedules');
     }
-    public function forceDelete(int $id): void
+   public function forceDelete(int $id, int $storeId = null): void
     {
-        $master = MasterSchedule::withTrashed()->findOrFail($id);
+        $master = MasterSchedule::withTrashed()
+            ->when($storeId, function ($q) use ($storeId) {
+                $q->where('store_id', $storeId);
+            })
+            ->findOrFail($id);
 
-        // 🔥 تحقق: لازم يكون soft deleted أولاً
         if (!$master->trashed()) {
             throw ValidationException::withMessages([
                 'force_delete' => ['You must delete the record first before force deleting.']
@@ -319,9 +323,13 @@ class MasterScheduleService
             $master->forceDelete();
         });
     }
-    public function deleteSchedule(int $id): void
+    public function deleteSchedule(int $id, int $storeId = null): void
     {
-        $schedule = Schedule::findOrFail($id);
+        $schedule = Schedule::when($storeId, function ($q) use ($storeId) {
+            $q->whereHas('masterSchedule', function ($q2) use ($storeId) {
+                $q2->where('store_id', $storeId);
+            });
+        })->findOrFail($id);
 
         if ($schedule->masterSchedule && $schedule->masterSchedule->published) {
             throw ValidationException::withMessages([
@@ -337,9 +345,15 @@ class MasterScheduleService
 
         $schedule->delete();
     }
-    public function restoreSchedule(int $id): Schedule
+    public function restoreSchedule(int $id, int $storeId = null): Schedule
     {
-        $schedule = Schedule::withTrashed()->findOrFail($id);
+        $schedule = Schedule::withTrashed()
+            ->when($storeId, function ($q) use ($storeId) {
+                $q->whereHas('masterSchedule', function ($q2) use ($storeId) {
+                    $q2->where('store_id', $storeId);
+                });
+            })
+            ->findOrFail($id);
 
         // 🔴 لازم يكون محذوف
         if (!$schedule->trashed()) {
@@ -352,9 +366,15 @@ class MasterScheduleService
 
         return $schedule->fresh();
     }
-    public function forceDeleteSchedule(int $id): void
+     public function forceDeleteSchedule(int $id, int $storeId = null): void
     {
-        $schedule = Schedule::withTrashed()->findOrFail($id);
+        $schedule = Schedule::withTrashed()
+            ->when($storeId, function ($q) use ($storeId) {
+                $q->whereHas('masterSchedule', function ($q2) use ($storeId) {
+                    $q2->where('store_id', $storeId);
+                });
+            })
+            ->findOrFail($id);
 
         // 🔴 لازم يكون soft deleted أولاً
         if (!$schedule->trashed()) {
@@ -366,9 +386,12 @@ class MasterScheduleService
         $schedule->forceDelete();
     }
     
-    public function getTrashed()
+    public function getTrashed(int $storeId = null)
     {
         return MasterSchedule::onlyTrashed()
+            ->when($storeId, function ($q) use ($storeId) {
+                $q->where('store_id', $storeId);
+            })
             ->with('schedules')
             ->orderBy('store_id')
             ->orderBy('start_date')
@@ -389,7 +412,7 @@ class MasterScheduleService
 
         return $dates;
     }
-    public function copySchedule(array $data, int $userId): MasterSchedule
+   public function copySchedule(array $data, int $userId): MasterSchedule
     {
         return DB::transaction(function () use ($data, $userId) {
 
@@ -398,6 +421,9 @@ class MasterScheduleService
 
                 // 🔵 المستخدم اختار جدول معين
                 $source = MasterSchedule::with('schedules')
+                    ->when($data['store_id'], function ($q) use ($data) {
+                        $q->where('store_id', $data['store_id']);
+                    })
                     ->findOrFail($data['master_schedule_id']);
 
             } else {
@@ -451,7 +477,16 @@ class MasterScheduleService
             return $newMaster->load('schedules');
         });
     }
-
+    public function getPublishedSchedules(int $storeId = null)
+    {
+        return MasterSchedule::query()
+            ->when($storeId, function ($q) use ($storeId) {
+                $q->where('store_id', $storeId);
+            })
+            ->where('published', true)
+            ->orderBy('start_date', 'asc')
+            ->get();
+    }
 
 
 

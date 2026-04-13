@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Models\Store;
 use Carbon\Carbon;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -11,6 +12,18 @@ class StoreMasterScheduleRequest extends FormRequest
     public function authorize(): bool
     {
         return true;
+    }
+    protected function prepareForValidation(): void
+    {
+        $storeParam = $this->route('store');
+
+        $storeId = $storeParam instanceof Store
+            ? $storeParam->id
+            : Store::where('store', $storeParam)->value('id');
+
+        $this->merge([
+            'store_id' => $storeId,
+        ]);
     }
 
     public function rules(): array

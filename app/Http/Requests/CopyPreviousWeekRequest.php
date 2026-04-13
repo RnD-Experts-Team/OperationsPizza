@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use App\Models\MasterSchedule;
+use App\Models\Store;
 use Carbon\Carbon;
 use Illuminate\Foundation\Http\FormRequest;
 
@@ -11,6 +12,19 @@ class CopyPreviousWeekRequest extends FormRequest
     public function authorize(): bool
     {
         return true;
+    }
+
+    protected function prepareForValidation()
+    {
+        $storeParam = $this->route('store');
+
+        $storeId = $storeParam instanceof Store
+            ? $storeParam->id
+            : Store::where('store', $storeParam)->value('id');
+
+        $this->merge([
+            'store_id' => $storeId,
+        ]);
     }
 
     public function rules(): array
@@ -31,7 +45,6 @@ class CopyPreviousWeekRequest extends FormRequest
             $start = Carbon::parse($this->start_date);
             $end = Carbon::parse($this->end_date);
 
-            // 🔴 validations الأساسية
             if ($end->lt($start)) {
                 $validator->errors()->add('end_date', 'end_date must be after start_date.');
             }
@@ -52,7 +65,6 @@ class CopyPreviousWeekRequest extends FormRequest
                 return;
             }
 
-            // 🔴 منع التكرار
             $exists = MasterSchedule::where('store_id', $storeId)
                 ->whereDate('start_date', $start)
                 ->whereDate('end_date', $end)
@@ -62,13 +74,11 @@ class CopyPreviousWeekRequest extends FormRequest
                 $validator->errors()->add('start_date', 'This schedule already exists.');
             }
 
-            // 🔴 constraint: فقط الأسبوع التالي
             $latest = MasterSchedule::where('store_id', $storeId)
                 ->orderByDesc('end_date')
                 ->first();
 
             if ($latest) {
-
                 $expectedStart = Carbon::parse($latest->start_date)->addWeek();
                 $expectedEnd = Carbon::parse($latest->end_date)->addWeek();
 

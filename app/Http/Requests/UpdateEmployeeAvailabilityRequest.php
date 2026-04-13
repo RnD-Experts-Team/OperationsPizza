@@ -6,6 +6,7 @@ use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 use App\Models\Availability;
 use App\Models\AvailabilityTime;
+use App\Models\Store; // 👈 إضافة
 
 class UpdateEmployeeAvailabilityRequest extends FormRequest
 {
@@ -25,17 +26,31 @@ class UpdateEmployeeAvailabilityRequest extends FormRequest
 
     public function rules(): array
     {
-        $id = $this->route('employee_availability') ?? $this->route('id');
+        $id = $this->route('employee_availability');
 
-        $availability = Availability::find($id);
+        // 👇 حل مشكلة store (Model أو string)
+        $storeParam = $this->route('store');
+
+        $storeId = $storeParam instanceof Store
+            ? $storeParam->id
+            : Store::where('store', $storeParam)->value('id');
+
+        $availability = Availability::where('id', $id)
+            ->whereHas('employee', function ($query) use ($storeId) {
+                $query->where('store_id', $storeId);
+            })
+            ->first();
 
         $employeeId = $this->employee_id ?? $availability?->employee_id;
 
         return [
-            // ✅ employee
-            'employee_id' => ['sometimes', 'exists:employees,id'],
+            'employee_id' => [
+                'sometimes',
+                Rule::exists('employees', 'id')->where(function ($query) use ($storeId) {
+                    $query->where('store_id', $storeId);
+                }),
+            ],
 
-            // ✅ day_of_week (مع ignore)
             'day_of_week' => [
                 'sometimes',
                 'string',
@@ -55,9 +70,7 @@ class UpdateEmployeeAvailabilityRequest extends FormRequest
                     ->ignore($id),
             ],
 
-            // ✅ times
             'times' => ['required', 'array', 'min:1'],
-
             'times.*.from' => ['required', 'date_format:H:i'],
             'times.*.to'   => ['required', 'date_format:H:i'],
         ];
@@ -66,7 +79,7 @@ class UpdateEmployeeAvailabilityRequest extends FormRequest
     public function messages(): array
     {
         return [
-            'employee_id.exists' => 'Selected employee does not exist.',
+            'employee_id.exists' => 'Selected employee does not belong to this store or does not exist.',
             'day_of_week.in' => 'Day of week is invalid.',
             'day_of_week.unique' => 'This day already exists for this employee.',
 
@@ -82,23 +95,29 @@ class UpdateEmployeeAvailabilityRequest extends FormRequest
     public function withValidator($validator)
     {
         $validator->after(function ($validator) {
-
             if (!$this->times || !is_array($this->times)) {
                 return;
             }
 
-            $id = $this->route('employee_availability') ?? $this->route('id');
+            $id = $this->route('employee_availability');
 
-            $availability = Availability::find($id);
+            // 👇 نفس حل store هنا أيضًا
+            $storeParam = $this->route('store');
+
+            $storeId = $storeParam instanceof Store
+                ? $storeParam->id
+                : Store::where('store', $storeParam)->value('id');
+
+            $availability = Availability::where('id', $id)
+                ->whereHas('employee', function ($query) use ($storeId) {
+                    $query->where('store_id', $storeId);
+                })
+                ->first();
 
             $employeeId = $this->employee_id ?? $availability?->employee_id;
             $dayOfWeek  = $this->day_of_week ?? $availability?->day_of_week;
 
-            // =========================
-            // 1. DB overlap (excluding current)
-            // =========================
             foreach ($this->times as $index => $time) {
-
                 $from = $time['from'] ?? null;
                 $to   = $time['to'] ?? null;
 
@@ -106,7 +125,6 @@ class UpdateEmployeeAvailabilityRequest extends FormRequest
                     continue;
                 }
 
-                // from < to
                 if ($from >= $to) {
                     $validator->errors()->add(
                         "times.$index.from",
@@ -119,7 +137,6 @@ class UpdateEmployeeAvailabilityRequest extends FormRequest
                     continue;
                 }
 
-                // 🔥 exclude current availability
                 $availabilities = Availability::where('employee_id', $employeeId)
                     ->where('day_of_week', $dayOfWeek)
                     ->where('id', '!=', $id)
@@ -144,14 +161,10 @@ class UpdateEmployeeAvailabilityRequest extends FormRequest
                 }
             }
 
-            // =========================
-            // 2. overlap داخل نفس request
-            // =========================
             $count = count($this->times);
 
             for ($i = 0; $i < $count; $i++) {
                 for ($j = $i + 1; $j < $count; $j++) {
-
                     $a = $this->times[$i];
                     $b = $this->times[$j];
 
