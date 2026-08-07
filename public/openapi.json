@@ -1,0 +1,3104 @@
+{
+    "openapi": "3.1.0",
+    "info": {
+        "title": "OperationsPizza API",
+        "version": "1.0.0",
+        "summary": "Employee scheduling, synchronised with TCP Humanity.",
+        "description": "The operations backend. Owns **scheduling**, and is the third Laravel service in\nthe NATS mesh alongside `pizzasys` (auth) and `HiringPizza` (employees).\n\n## Who owns what\n\n- **pizzasys** is the auth source of truth. Every bearer token here is verified\n  against it on every request; nothing authenticates locally.\n- **HiringPizza** is the employee source of truth *and the only writer of staff\n  into Humanity*. When scheduling meets an employee with no Humanity link, this\n  service asks over NATS and waits — two writers to one external system is how\n  duplicate people get created.\n- **TCP Humanity** is the source of truth for **shifts**. Every write goes there\n  first, and a row exists here only because that write succeeded. A failed write\n  therefore means nothing changed anywhere.\n\n## Eight things that will bite you\n\nEach one is a bug that looks like it works.\n\n1. **`day_index` is computed server-side.** Never derive it client-side. The\n   business week starts **Tuesday**, and that is a per-store setting\n   (`week.week_start_dow`), not a constant.\n2. **Use `duration_minutes`, never wall-clock arithmetic over start/end.** It is\n   wrong on the two DST days a year: `22:00-06:00` is **9 hours** on the\n   November fall-back night. That is the payroll number.\n3. **A Shift's `id` is an *assignment* id, not a shift id.** One Humanity shift\n   can hold several employees; the grid draws one card per person. Use the\n   separate `shift_id` field to update or delete.\n4. **Updates are `POST`, not `PUT`/`PATCH`** — house convention across these\n   services.\n5. **`EMPLOYEE_NOT_SYNCED` (409) is resumable, not a failure.** Nothing was\n   written. Hold the user's input, poll `poll_url`, and replay.\n6. **Bulk operations return `202` + a batch id and must be polled.** There is no\n   rollback; failures come back per item with a retry endpoint.\n7. **Publishing uploads `multipart/form-data` with a real `Blob`** —\n   `canvas.toBlob()`, not `toDataURL()`.\n8. **Shifts legitimately cross midnight.** The store closes at `00:00`, so\n   `end_time <= start_time` is normal, not an error.\n\n## Store scoping\n\nEvery route is store-scoped, and `{storeId}` is the **`store_number` string**\n(e.g. `03759-00001`), matching HiringPizza — not the numeric primary key that\nNATS events carry.",
+        "contact": {
+            "name": "Operations backend"
+        }
+    },
+    "servers": [
+        {
+            "url": "/api",
+            "description": "This service"
+        }
+    ],
+    "tags": [
+        {
+            "name": "Health",
+            "description": "Liveness and auth-chain smoke test."
+        },
+        {
+            "name": "Schedule",
+            "description": "The week payload that boots the grid, plus roster and department lookups."
+        },
+        {
+            "name": "Shifts",
+            "description": "Planned shifts. Every write goes to TCP Humanity first."
+        },
+        {
+            "name": "Actual shifts",
+            "description": "What actually happened. Owned here; never pushed to Humanity."
+        },
+        {
+            "name": "Availability",
+            "description": "Blocked windows, projected from hiring profiles plus manager overrides."
+        },
+        {
+            "name": "Time off",
+            "description": "Mirrored from Humanity leave, expanded per day."
+        },
+        {
+            "name": "Templates",
+            "description": "Reusable week patterns. Local only until applied."
+        },
+        {
+            "name": "Publishing",
+            "description": "Frozen week snapshots with an optional screenshot."
+        },
+        {
+            "name": "Bulk",
+            "description": "Async multi-shift operations. Always 202 + a batch id."
+        },
+        {
+            "name": "Employee sync",
+            "description": "The unsynced-employee loop."
+        }
+    ],
+    "security": [
+        {
+            "bearerAuth": []
+        }
+    ],
+    "paths": {
+        "/v1/health": {
+            "get": {
+                "tags": [
+                    "Health"
+                ],
+                "summary": "Smoke-test the whole auth chain",
+                "description": "Sits behind the same middleware as everything else, so a 200 here proves the pizzasys token verification, the service client and the auth rules are all wired correctly.",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "object",
+                                            "properties": {
+                                                "service": {
+                                                    "type": "string",
+                                                    "example": "operations-system"
+                                                },
+                                                "status": {
+                                                    "type": "string",
+                                                    "example": "ok"
+                                                },
+                                                "time": {
+                                                    "type": "string",
+                                                    "format": "date-time"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "$ref": "#/components/responses/Unauthorized"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    }
+                }
+            }
+        },
+        "/v1/stores/{storeId}/schedule/week": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/StoreId"
+                }
+            ],
+            "get": {
+                "tags": [
+                    "Schedule"
+                ],
+                "summary": "Boot the whole grid in one call",
+                "description": "Returns roster, shifts, actuals, availability, time off, conflicts, stats and the published record for one week.\n\n`week_start` may be **any day inside the week** — it is snapped to the store's configured week start (Tuesday for these stores), so clients never need to know the business-week rule.",
+                "parameters": [
+                    {
+                        "name": "week_start",
+                        "in": "query",
+                        "schema": {
+                            "type": "string",
+                            "format": "date"
+                        },
+                        "description": "Any date inside the target week. Defaults to today.",
+                        "example": "2026-08-06"
+                    },
+                    {
+                        "name": "mode",
+                        "in": "query",
+                        "schema": {
+                            "type": "string",
+                            "enum": [
+                                "planned",
+                                "actual",
+                                "both"
+                            ],
+                            "default": "planned"
+                        },
+                        "description": "`planned` omits actual_shifts entirely."
+                    },
+                    {
+                        "name": "department",
+                        "in": "query",
+                        "schema": {
+                            "type": "string"
+                        },
+                        "description": "Filters the roster; shifts follow it, so a filtered grid never shows a card with no row to sit on."
+                    },
+                    {
+                        "name": "search",
+                        "in": "query",
+                        "schema": {
+                            "type": "string"
+                        },
+                        "description": "Matches first or last name."
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The week",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/ScheduleWeek"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "$ref": "#/components/responses/Unauthorized"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    },
+                    "422": {
+                        "$ref": "#/components/responses/ValidationFailed"
+                    }
+                }
+            }
+        },
+        "/v1/stores/{storeId}/schedule/employees": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/StoreId"
+                }
+            ],
+            "get": {
+                "tags": [
+                    "Schedule"
+                ],
+                "summary": "Roster only",
+                "description": "For pickers that don't need a whole week. Active employees assigned to this store.",
+                "parameters": [
+                    {
+                        "name": "search",
+                        "in": "query",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Roster",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/Employee"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "$ref": "#/components/responses/Unauthorized"
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                }
+            }
+        },
+        "/v1/stores/{storeId}/schedule/departments": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/StoreId"
+                }
+            ],
+            "get": {
+                "tags": [
+                    "Schedule"
+                ],
+                "summary": "Department filter list",
+                "description": "The Humanity positions mapped to this store. Only values that can actually match an employee.",
+                "responses": {
+                    "200": {
+                        "description": "Departments",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "id": {
+                                                        "type": "string"
+                                                    },
+                                                    "name": {
+                                                        "type": "string"
+                                                    },
+                                                    "humanity_position_id": {
+                                                        "type": "string"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "$ref": "#/components/responses/Unauthorized"
+                    }
+                }
+            }
+        },
+        "/v1/stores/{storeId}/shifts": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/StoreId"
+                }
+            ],
+            "post": {
+                "tags": [
+                    "Shifts"
+                ],
+                "summary": "Create a shift",
+                "description": "**Writes to TCP Humanity first**, and only persists locally once that succeeded. So a failure means nothing changed anywhere — safe to retry, and safe to roll optimistic UI state back.",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": [
+                                    "employee_id",
+                                    "shift_date",
+                                    "start_time",
+                                    "end_time"
+                                ],
+                                "properties": {
+                                    "employee_id": {
+                                        "type": "integer",
+                                        "example": 501
+                                    },
+                                    "shift_date": {
+                                        "type": "string",
+                                        "format": "date",
+                                        "description": "Absolute date. Convert day_index yourself.",
+                                        "example": "2026-08-06"
+                                    },
+                                    "start_time": {
+                                        "type": "string",
+                                        "pattern": "^\\d{1,2}:\\d{2}(:\\d{2})?$",
+                                        "example": "09:00"
+                                    },
+                                    "end_time": {
+                                        "type": "string",
+                                        "pattern": "^\\d{1,2}:\\d{2}(:\\d{2})?$",
+                                        "description": "May be <= start_time; the store closes at 00:00, so crossing midnight is routine.",
+                                        "example": "17:00"
+                                    },
+                                    "label": {
+                                        "type": "string",
+                                        "nullable": true,
+                                        "maxLength": 120
+                                    },
+                                    "shift_type": {
+                                        "type": "string",
+                                        "enum": [
+                                            "morning",
+                                            "evening",
+                                            "night",
+                                            "split",
+                                            "custom"
+                                        ]
+                                    },
+                                    "note": {
+                                        "type": "string",
+                                        "nullable": true,
+                                        "maxLength": 2000
+                                    },
+                                    "position_id": {
+                                        "type": "integer",
+                                        "nullable": true,
+                                        "description": "Defaults to the employee's primary position, then the store default."
+                                    },
+                                    "slots": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "maximum": 99,
+                                        "default": 1
+                                    },
+                                    "force": {
+                                        "type": "boolean",
+                                        "default": false,
+                                        "description": "Bypasses the conflict and availability guards after the manager confirms. Re-send the identical payload with this set."
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/Shift"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "$ref": "#/components/responses/Unauthorized"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    },
+                    "409": {
+                        "$ref": "#/components/responses/WriteConflict"
+                    },
+                    "422": {
+                        "$ref": "#/components/responses/UnprocessableWrite"
+                    },
+                    "502": {
+                        "$ref": "#/components/responses/HumanityWriteFailed"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/HumanityRateLimited"
+                    }
+                }
+            }
+        },
+        "/v1/stores/{storeId}/shifts/{shiftId}": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/StoreId"
+                },
+                {
+                    "name": "shiftId",
+                    "in": "path",
+                    "required": true,
+                    "schema": {
+                        "type": "integer"
+                    },
+                    "description": "The `shift_id` field of a Shift, NOT its `id` (which is the assignment id)."
+                }
+            ],
+            "get": {
+                "tags": [
+                    "Shifts"
+                ],
+                "summary": "Read one shift",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/Shift"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                }
+            },
+            "post": {
+                "tags": [
+                    "Shifts"
+                ],
+                "summary": "Update a shift (POST, not PUT)",
+                "description": "House convention across these services. Changing `employee_id` reassigns the shift, which in Humanity is an unassign followed by an assign rather than a field edit.",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "employee_id": {
+                                        "type": "integer",
+                                        "description": "Reassigns the shift."
+                                    },
+                                    "shift_date": {
+                                        "type": "string",
+                                        "format": "date"
+                                    },
+                                    "start_time": {
+                                        "type": "string"
+                                    },
+                                    "end_time": {
+                                        "type": "string"
+                                    },
+                                    "label": {
+                                        "type": "string",
+                                        "nullable": true
+                                    },
+                                    "shift_type": {
+                                        "type": "string",
+                                        "enum": [
+                                            "morning",
+                                            "evening",
+                                            "night",
+                                            "split",
+                                            "custom"
+                                        ]
+                                    },
+                                    "note": {
+                                        "type": "string",
+                                        "nullable": true
+                                    },
+                                    "position_id": {
+                                        "type": "integer",
+                                        "nullable": true
+                                    },
+                                    "slots": {
+                                        "type": "integer"
+                                    },
+                                    "force": {
+                                        "type": "boolean"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Updated",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/Shift"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    },
+                    "409": {
+                        "$ref": "#/components/responses/WriteConflict"
+                    },
+                    "422": {
+                        "$ref": "#/components/responses/UnprocessableWrite"
+                    },
+                    "502": {
+                        "$ref": "#/components/responses/HumanityWriteFailed"
+                    }
+                }
+            },
+            "delete": {
+                "tags": [
+                    "Shifts"
+                ],
+                "summary": "Delete a shift",
+                "description": "Removed from Humanity FIRST. If that fails nothing is deleted locally either — a shift invisible to managers but still live for the employee is the worst divergence available, so refetch rather than removing it from the UI.",
+                "parameters": [
+                    {
+                        "name": "confirm",
+                        "in": "query",
+                        "schema": {
+                            "type": "boolean"
+                        },
+                        "description": "Required for a published shift: employees may already have been notified by Humanity."
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "Deleted"
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    },
+                    "409": {
+                        "description": "The shift is published and `confirm=true` was not supplied (`SHIFT_PUBLISHED`).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "$ref": "#/components/responses/HumanityWriteFailed"
+                    }
+                }
+            }
+        },
+        "/v1/stores/{storeId}/employees/{employeeId}/sync-status": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/StoreId"
+                },
+                {
+                    "$ref": "#/components/parameters/EmployeeId"
+                }
+            ],
+            "get": {
+                "tags": [
+                    "Employee sync"
+                ],
+                "summary": "Poll whether an employee is linked to Humanity yet",
+                "description": "The other half of the `EMPLOYEE_NOT_SYNCED` flow. Poll roughly every 5s; when `synced` is true, replay the request that failed.",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/EmployeeSyncStatus"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                }
+            }
+        },
+        "/v1/stores/{storeId}/employees/{employeeId}/humanity-sync": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/StoreId"
+                },
+                {
+                    "$ref": "#/components/parameters/EmployeeId"
+                }
+            ],
+            "post": {
+                "tags": [
+                    "Employee sync"
+                ],
+                "summary": "Manually request a Humanity sync",
+                "description": "For when the automatic request never landed. Publishes `operations.v1.employee.humanity_sync_requested` over NATS; **HiringPizza** does the actual write, because it is the only system allowed to create employees in Humanity. Repeated calls within 60s are de-duplicated.\n\nReturns 200 (not 202) if the employee is already linked.",
+                "responses": {
+                    "202": {
+                        "description": "Sync requested",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/EmployeeSyncStatus"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "200": {
+                        "description": "Already linked",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/EmployeeSyncStatus"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                }
+            }
+        },
+        "/v1/stores/{storeId}/actual-shifts": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/StoreId"
+                }
+            ],
+            "post": {
+                "tags": [
+                    "Actual shifts"
+                ],
+                "summary": "Create or amend an actual shift",
+                "description": "Local only — never pushed to Humanity. Passing `shift_assignment_id` amends the existing actual for that assignment rather than stacking a duplicate. `status` is derived, not accepted.",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": [
+                                    "employee_id",
+                                    "shift_date",
+                                    "start_time",
+                                    "end_time"
+                                ],
+                                "properties": {
+                                    "employee_id": {
+                                        "type": "integer"
+                                    },
+                                    "shift_assignment_id": {
+                                        "type": "integer",
+                                        "nullable": true,
+                                        "description": "Omit for ad-hoc coverage (becomes status `added`)."
+                                    },
+                                    "shift_date": {
+                                        "type": "string",
+                                        "format": "date"
+                                    },
+                                    "start_time": {
+                                        "type": "string"
+                                    },
+                                    "end_time": {
+                                        "type": "string"
+                                    },
+                                    "label": {
+                                        "type": "string",
+                                        "nullable": true
+                                    },
+                                    "shift_type": {
+                                        "type": "string",
+                                        "enum": [
+                                            "morning",
+                                            "evening",
+                                            "night",
+                                            "split",
+                                            "custom"
+                                        ]
+                                    },
+                                    "note": {
+                                        "type": "string",
+                                        "nullable": true
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/ActualShift"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "$ref": "#/components/responses/ValidationFailed"
+                    }
+                }
+            }
+        },
+        "/v1/stores/{storeId}/actual-shifts/{actualId}": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/StoreId"
+                },
+                {
+                    "name": "actualId",
+                    "in": "path",
+                    "required": true,
+                    "schema": {
+                        "type": "integer"
+                    }
+                }
+            ],
+            "post": {
+                "tags": [
+                    "Actual shifts"
+                ],
+                "summary": "Edit an actual shift's times",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "start_time": {
+                                        "type": "string"
+                                    },
+                                    "end_time": {
+                                        "type": "string"
+                                    },
+                                    "label": {
+                                        "type": "string",
+                                        "nullable": true
+                                    },
+                                    "shift_type": {
+                                        "type": "string"
+                                    },
+                                    "note": {
+                                        "type": "string",
+                                        "nullable": true
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Updated",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/ActualShift"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                }
+            },
+            "delete": {
+                "tags": [
+                    "Actual shifts"
+                ],
+                "summary": "Delete an actual shift",
+                "responses": {
+                    "204": {
+                        "description": "Deleted"
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                }
+            }
+        },
+        "/v1/stores/{storeId}/actual-shifts/{actualId}/absent": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/StoreId"
+                },
+                {
+                    "name": "actualId",
+                    "in": "path",
+                    "required": true,
+                    "schema": {
+                        "type": "integer"
+                    }
+                }
+            ],
+            "post": {
+                "tags": [
+                    "Actual shifts"
+                ],
+                "summary": "Mark an actual shift as a no-show",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "note": {
+                                        "type": "string",
+                                        "nullable": true
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Updated",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/ActualShift"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                }
+            }
+        },
+        "/v1/stores/{storeId}/shift-assignments/{assignmentId}/confirm-actual": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/StoreId"
+                },
+                {
+                    "name": "assignmentId",
+                    "in": "path",
+                    "required": true,
+                    "schema": {
+                        "type": "integer"
+                    },
+                    "description": "A Shift's `id` (the assignment id)."
+                }
+            ],
+            "post": {
+                "tags": [
+                    "Actual shifts"
+                ],
+                "summary": "One-click \"worked exactly as planned\"",
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/ActualShift"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                }
+            }
+        },
+        "/v1/stores/{storeId}/availability": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/StoreId"
+                }
+            ],
+            "get": {
+                "tags": [
+                    "Availability"
+                ],
+                "summary": "Blocked windows for a week",
+                "parameters": [
+                    {
+                        "name": "week_start",
+                        "in": "query",
+                        "schema": {
+                            "type": "string",
+                            "format": "date"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/AvailabilityRule"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/stores/{storeId}/availability-overrides": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/StoreId"
+                }
+            ],
+            "post": {
+                "tags": [
+                    "Availability"
+                ],
+                "summary": "Add a manager-entered block",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": [
+                                    "employee_id",
+                                    "scope"
+                                ],
+                                "properties": {
+                                    "employee_id": {
+                                        "type": "integer"
+                                    },
+                                    "scope": {
+                                        "type": "string",
+                                        "enum": [
+                                            "weekly",
+                                            "date"
+                                        ]
+                                    },
+                                    "day_of_week": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "maximum": 6,
+                                        "nullable": true,
+                                        "description": "Required when scope=weekly. CANONICAL 0=Sun..6=Sat — NOT the grid's Tuesday-based day_index. Convert at the API edge."
+                                    },
+                                    "specific_date": {
+                                        "type": "string",
+                                        "format": "date",
+                                        "nullable": true,
+                                        "description": "Required when scope=date."
+                                    },
+                                    "all_day": {
+                                        "type": "boolean",
+                                        "default": true
+                                    },
+                                    "start_time": {
+                                        "type": "string",
+                                        "nullable": true,
+                                        "description": "Required when all_day is false."
+                                    },
+                                    "end_time": {
+                                        "type": "string",
+                                        "nullable": true
+                                    },
+                                    "reason": {
+                                        "type": "string",
+                                        "nullable": true,
+                                        "maxLength": 255
+                                    },
+                                    "effective_from": {
+                                        "type": "string",
+                                        "format": "date",
+                                        "nullable": true
+                                    },
+                                    "effective_to": {
+                                        "type": "string",
+                                        "format": "date",
+                                        "nullable": true
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": "Created"
+                    },
+                    "422": {
+                        "$ref": "#/components/responses/ValidationFailed"
+                    }
+                }
+            }
+        },
+        "/v1/stores/{storeId}/availability-overrides/{overrideId}": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/StoreId"
+                },
+                {
+                    "name": "overrideId",
+                    "in": "path",
+                    "required": true,
+                    "schema": {
+                        "type": "integer"
+                    }
+                }
+            ],
+            "delete": {
+                "tags": [
+                    "Availability"
+                ],
+                "summary": "Remove a manager-entered block",
+                "description": "Only overrides can be deleted. Profile-derived rules come from HiringPizza and must be changed there.",
+                "responses": {
+                    "204": {
+                        "description": "Deleted"
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                }
+            }
+        },
+        "/v1/stores/{storeId}/time-off": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/StoreId"
+                }
+            ],
+            "get": {
+                "tags": [
+                    "Time off"
+                ],
+                "summary": "Time off for a week, expanded per day",
+                "parameters": [
+                    {
+                        "name": "week_start",
+                        "in": "query",
+                        "schema": {
+                            "type": "string",
+                            "format": "date"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/TimeOffEntry"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "tags": [
+                    "Time off"
+                ],
+                "summary": "Add locally-entered time off",
+                "description": "NOT pushed to Humanity: leave approval is a workflow that lives there, and pushing an unapproved entry would create a record nobody signed off on.",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": [
+                                    "employee_id",
+                                    "start_date",
+                                    "end_date",
+                                    "type"
+                                ],
+                                "properties": {
+                                    "employee_id": {
+                                        "type": "integer"
+                                    },
+                                    "start_date": {
+                                        "type": "string",
+                                        "format": "date"
+                                    },
+                                    "end_date": {
+                                        "type": "string",
+                                        "format": "date"
+                                    },
+                                    "type": {
+                                        "type": "string",
+                                        "enum": [
+                                            "pto",
+                                            "vacation",
+                                            "sick",
+                                            "unpaid",
+                                            "other"
+                                        ]
+                                    },
+                                    "label": {
+                                        "type": "string",
+                                        "nullable": true
+                                    },
+                                    "note": {
+                                        "type": "string",
+                                        "nullable": true
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": "Created"
+                    },
+                    "422": {
+                        "$ref": "#/components/responses/ValidationFailed"
+                    }
+                }
+            }
+        },
+        "/v1/stores/{storeId}/time-off/{timeOffId}": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/StoreId"
+                },
+                {
+                    "name": "timeOffId",
+                    "in": "path",
+                    "required": true,
+                    "schema": {
+                        "type": "integer"
+                    },
+                    "description": "The `time_off_id` field, not the per-day synthetic `id`."
+                }
+            ],
+            "delete": {
+                "tags": [
+                    "Time off"
+                ],
+                "summary": "Remove locally-entered time off",
+                "responses": {
+                    "204": {
+                        "description": "Deleted"
+                    },
+                    "409": {
+                        "description": "The entry came from Humanity (`TIME_OFF_READ_ONLY`) and would reappear on the next sync — withdraw it in Humanity instead.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                }
+            }
+        },
+        "/v1/stores/{storeId}/schedule-templates": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/StoreId"
+                }
+            ],
+            "get": {
+                "tags": [
+                    "Templates"
+                ],
+                "summary": "List templates",
+                "parameters": [
+                    {
+                        "name": "page",
+                        "in": "query",
+                        "schema": {
+                            "type": "integer",
+                            "default": 1
+                        }
+                    },
+                    {
+                        "name": "per_page",
+                        "in": "query",
+                        "schema": {
+                            "type": "integer",
+                            "default": 25,
+                            "maximum": 100
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Paginated",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Paginator"
+                                        },
+                                        {
+                                            "type": "object",
+                                            "properties": {
+                                                "data": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "$ref": "#/components/schemas/ScheduleTemplate"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "tags": [
+                    "Templates"
+                ],
+                "summary": "Snapshot a week into a reusable template",
+                "description": "You don't send shifts — the given week is captured, stored week-relative by `day_index`.",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": [
+                                    "name",
+                                    "week_start"
+                                ],
+                                "properties": {
+                                    "name": {
+                                        "type": "string",
+                                        "maxLength": 190
+                                    },
+                                    "description": {
+                                        "type": "string",
+                                        "nullable": true
+                                    },
+                                    "week_start": {
+                                        "type": "string",
+                                        "format": "date"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/ScheduleTemplate"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "$ref": "#/components/responses/ValidationFailed"
+                    }
+                }
+            }
+        },
+        "/v1/stores/{storeId}/schedule-templates/{templateId}": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/StoreId"
+                },
+                {
+                    "name": "templateId",
+                    "in": "path",
+                    "required": true,
+                    "schema": {
+                        "type": "integer"
+                    }
+                }
+            ],
+            "get": {
+                "tags": [
+                    "Templates"
+                ],
+                "summary": "Read a template with its shifts",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/ScheduleTemplate"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                }
+            },
+            "post": {
+                "tags": [
+                    "Templates"
+                ],
+                "summary": "Rename a template",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {
+                                        "type": "string"
+                                    },
+                                    "description": {
+                                        "type": "string",
+                                        "nullable": true
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Updated"
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                }
+            },
+            "delete": {
+                "tags": [
+                    "Templates"
+                ],
+                "summary": "Delete a template",
+                "responses": {
+                    "204": {
+                        "description": "Deleted"
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                }
+            }
+        },
+        "/v1/stores/{storeId}/published-schedules": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/StoreId"
+                }
+            ],
+            "get": {
+                "tags": [
+                    "Publishing"
+                ],
+                "summary": "Publish history",
+                "parameters": [
+                    {
+                        "name": "page",
+                        "in": "query",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "per_page",
+                        "in": "query",
+                        "schema": {
+                            "type": "integer",
+                            "default": 25,
+                            "maximum": 100
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Paginated",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Paginator"
+                                        },
+                                        {
+                                            "type": "object",
+                                            "properties": {
+                                                "data": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "$ref": "#/components/schemas/PublishedSchedule"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "tags": [
+                    "Publishing"
+                ],
+                "summary": "Publish a week",
+                "description": "Freezes the week's shift list and stores an optional screenshot as a FILE.\n\n**multipart/form-data, and the screenshot must be a real Blob** — use `canvas.toBlob()`, not `toDataURL()`. An html2canvas render at scale 2 over a 10x7 grid is 1-3 MB, which has no business travelling as base64 in a JSON body.\n\nRe-publishing the same week supersedes the previous record, so \"the published week\" is never ambiguous.",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "multipart/form-data": {
+                            "schema": {
+                                "type": "object",
+                                "required": [
+                                    "week_start"
+                                ],
+                                "properties": {
+                                    "week_start": {
+                                        "type": "string",
+                                        "format": "date"
+                                    },
+                                    "screenshot": {
+                                        "type": "string",
+                                        "format": "binary",
+                                        "description": "Optional image, max 8 MB."
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": "Published",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/PublishedSchedule"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "$ref": "#/components/responses/ValidationFailed"
+                    }
+                }
+            }
+        },
+        "/v1/stores/{storeId}/published-schedules/{publishedId}": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/StoreId"
+                },
+                {
+                    "name": "publishedId",
+                    "in": "path",
+                    "required": true,
+                    "schema": {
+                        "type": "integer"
+                    }
+                }
+            ],
+            "get": {
+                "tags": [
+                    "Publishing"
+                ],
+                "summary": "Read a published week, with its frozen shift snapshot",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/PublishedSchedule"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                }
+            },
+            "delete": {
+                "tags": [
+                    "Publishing"
+                ],
+                "summary": "Delete a published record and its screenshot",
+                "responses": {
+                    "204": {
+                        "description": "Deleted"
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                }
+            }
+        },
+        "/v1/stores/{storeId}/schedule/bulk/copy-week": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/StoreId"
+                }
+            ],
+            "post": {
+                "tags": [
+                    "Bulk"
+                ],
+                "summary": "Copy one week onto another",
+                "description": "Queued, never synchronous: a copy-week fans out into dozens of Humanity calls against an undocumented rate limit. Poll the returned batch id.",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": [
+                                    "source_week_start",
+                                    "target_week_start"
+                                ],
+                                "properties": {
+                                    "source_week_start": {
+                                        "type": "string",
+                                        "format": "date"
+                                    },
+                                    "target_week_start": {
+                                        "type": "string",
+                                        "format": "date"
+                                    },
+                                    "mode": {
+                                        "type": "string",
+                                        "enum": [
+                                            "replace",
+                                            "merge"
+                                        ],
+                                        "default": "replace",
+                                        "description": "`replace` wipes the target week first, sequencing the deletes before the creates."
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "202": {
+                        "$ref": "#/components/responses/BulkAccepted"
+                    },
+                    "422": {
+                        "$ref": "#/components/responses/ValidationFailed"
+                    }
+                }
+            }
+        },
+        "/v1/stores/{storeId}/schedule/bulk/apply-template": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/StoreId"
+                }
+            ],
+            "post": {
+                "tags": [
+                    "Bulk"
+                ],
+                "summary": "Apply a template to a week",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": [
+                                    "template_id",
+                                    "week_start"
+                                ],
+                                "properties": {
+                                    "template_id": {
+                                        "type": "integer"
+                                    },
+                                    "week_start": {
+                                        "type": "string",
+                                        "format": "date"
+                                    },
+                                    "mode": {
+                                        "type": "string",
+                                        "enum": [
+                                            "replace",
+                                            "merge"
+                                        ],
+                                        "default": "replace"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "202": {
+                        "$ref": "#/components/responses/BulkAccepted"
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                }
+            }
+        },
+        "/v1/stores/{storeId}/schedule/bulk/clear-week": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/StoreId"
+                }
+            ],
+            "post": {
+                "tags": [
+                    "Bulk"
+                ],
+                "summary": "Delete every shift in a week",
+                "description": "Deletes real shifts in Humanity that employees may already be working from, so `confirm` is mandatory.",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": [
+                                    "week_start",
+                                    "confirm"
+                                ],
+                                "properties": {
+                                    "week_start": {
+                                        "type": "string",
+                                        "format": "date"
+                                    },
+                                    "confirm": {
+                                        "type": "boolean",
+                                        "enum": [
+                                            true
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "202": {
+                        "$ref": "#/components/responses/BulkAccepted"
+                    },
+                    "422": {
+                        "$ref": "#/components/responses/ValidationFailed"
+                    }
+                }
+            }
+        },
+        "/v1/stores/{storeId}/schedule/bulk/{batchId}": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/StoreId"
+                },
+                {
+                    "name": "batchId",
+                    "in": "path",
+                    "required": true,
+                    "schema": {
+                        "type": "string"
+                    },
+                    "description": "The ULID returned by a bulk endpoint."
+                }
+            ],
+            "get": {
+                "tags": [
+                    "Bulk"
+                ],
+                "summary": "Poll a bulk operation",
+                "description": "Poll every ~2s while `queued` or `processing`, then refetch the week. `completed_with_errors` is a normal outcome — see the schema note on why there is no rollback.",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/BulkOperation"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                }
+            }
+        },
+        "/v1/stores/{storeId}/schedule/bulk/{batchId}/retry-failed": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/StoreId"
+                },
+                {
+                    "name": "batchId",
+                    "in": "path",
+                    "required": true,
+                    "schema": {
+                        "type": "string"
+                    }
+                }
+            ],
+            "post": {
+                "tags": [
+                    "Bulk"
+                ],
+                "summary": "Re-queue only the failed items",
+                "description": "Successful items are left alone and the failure counter is rolled back by the number retried, so progress stays truthful on the second pass. Returns 200 unchanged if nothing failed.",
+                "responses": {
+                    "202": {
+                        "$ref": "#/components/responses/BulkAccepted"
+                    },
+                    "200": {
+                        "description": "Nothing to retry",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/BulkOperation"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                }
+            }
+        }
+    },
+    "components": {
+        "securitySchemes": {
+            "bearerAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "description": "A pizzasys Sanctum token. Verified upstream on every request, together with an authorization decision — so a valid token can still yield 403 on a route this subject may not use."
+            }
+        },
+        "parameters": {
+            "StoreId": {
+                "name": "storeId",
+                "in": "path",
+                "required": true,
+                "schema": {
+                    "type": "string"
+                },
+                "description": "The store_number STRING (e.g. `03759-00001`), not the numeric primary key.",
+                "example": "03759-00001"
+            },
+            "EmployeeId": {
+                "name": "employeeId",
+                "in": "path",
+                "required": true,
+                "schema": {
+                    "type": "integer"
+                },
+                "description": "The HiringPizza employee id.",
+                "example": 501
+            }
+        },
+        "schemas": {
+            "Error": {
+                "type": "object",
+                "description": "Every domain failure uses this shape. Branch on `error.code`, never on the message.",
+                "required": [
+                    "message",
+                    "error"
+                ],
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "Human-readable and safe to show to a user.",
+                        "example": "This employee already has an overlapping shift."
+                    },
+                    "error": {
+                        "type": "object",
+                        "required": [
+                            "code"
+                        ],
+                        "properties": {
+                            "code": {
+                                "type": "string",
+                                "description": "The machine-readable contract. See the `x-error-codes` section on the API root.",
+                                "enum": [
+                                    "EMPLOYEE_NOT_SYNCED",
+                                    "SHIFT_CONFLICT",
+                                    "EMPLOYEE_UNAVAILABLE",
+                                    "EMPLOYEE_ON_TIME_OFF",
+                                    "SHIFT_PUBLISHED",
+                                    "TIME_OFF_READ_ONLY",
+                                    "INVALID_LOCAL_TIME",
+                                    "STORE_NOT_MAPPED",
+                                    "POSITION_NOT_MAPPED",
+                                    "EMPLOYEE_NOT_IN_STORE",
+                                    "SHIFT_UNASSIGNED",
+                                    "HUMANITY_RATE_LIMITED",
+                                    "HUMANITY_WRITE_FAILED"
+                                ]
+                            }
+                        },
+                        "additionalProperties": true
+                    }
+                }
+            },
+            "ValidationError": {
+                "type": "object",
+                "description": "Standard Laravel validation failure.",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "example": "The shift date field is required."
+                    },
+                    "errors": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            },
+            "EmployeeNotSyncedError": {
+                "allOf": [
+                    {
+                        "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                        "type": "object",
+                        "description": "Resumable. Nothing was written anywhere. HiringPizza has been asked over NATS to create the employee in Humanity; poll `poll_url` and replay the original request once `synced` is true.",
+                        "properties": {
+                            "error": {
+                                "type": "object",
+                                "properties": {
+                                    "code": {
+                                        "type": "string",
+                                        "enum": [
+                                            "EMPLOYEE_NOT_SYNCED"
+                                        ]
+                                    },
+                                    "employee_id": {
+                                        "type": "string",
+                                        "example": "501"
+                                    },
+                                    "employee_name": {
+                                        "type": "string",
+                                        "example": "Marco Rossi"
+                                    },
+                                    "sync_status": {
+                                        "type": "string",
+                                        "enum": [
+                                            "requested",
+                                            "fulfilled",
+                                            "failed"
+                                        ]
+                                    },
+                                    "sync_requested_at": {
+                                        "type": "string",
+                                        "format": "date-time",
+                                        "nullable": true
+                                    },
+                                    "sync_last_error": {
+                                        "type": "string",
+                                        "nullable": true
+                                    },
+                                    "retry_after_seconds": {
+                                        "type": "integer",
+                                        "example": 5
+                                    },
+                                    "poll_url": {
+                                        "type": "string",
+                                        "example": "/api/v1/stores/03759-00001/employees/501/sync-status"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                ]
+            },
+            "Employee": {
+                "type": "object",
+                "description": "Replicated from HiringPizza. Read-only here.",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "The HiringPizza employee id, as a string.",
+                        "example": "501"
+                    },
+                    "name": {
+                        "type": "string",
+                        "example": "Marco Rossi"
+                    },
+                    "first_name": {
+                        "type": "string"
+                    },
+                    "last_name": {
+                        "type": "string"
+                    },
+                    "role": {
+                        "type": "string",
+                        "nullable": true,
+                        "description": "Primary position label.",
+                        "example": "Pizzaiolo"
+                    },
+                    "department": {
+                        "type": "string",
+                        "nullable": true,
+                        "description": "The mapped Humanity position name.",
+                        "example": "Kitchen"
+                    },
+                    "avatar": {
+                        "type": "string",
+                        "description": "Server-assigned initials.",
+                        "example": "MR"
+                    },
+                    "color": {
+                        "type": "string",
+                        "description": "Server-assigned and stable per employee, so a person is the same colour across sessions, devices and users.",
+                        "enum": [
+                            "blue",
+                            "emerald",
+                            "violet",
+                            "amber",
+                            "rose",
+                            "cyan",
+                            "orange",
+                            "pink",
+                            "indigo",
+                            "teal"
+                        ]
+                    },
+                    "is_active": {
+                        "type": "boolean",
+                        "description": "Derived: true iff at least one store membership has an active status (hired/rehired)."
+                    },
+                    "status": {
+                        "type": "string",
+                        "nullable": true,
+                        "enum": [
+                            "hired",
+                            "rehired",
+                            "resigned",
+                            "terminated",
+                            null
+                        ]
+                    },
+                    "humanity_employee_id": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "synced": {
+                        "type": "boolean",
+                        "description": "False means the employee has no TCP Humanity counterpart and CANNOT be scheduled yet."
+                    },
+                    "hourly_rate": {
+                        "type": "number",
+                        "format": "float",
+                        "nullable": true,
+                        "description": "The pay rate effective on the requested date, not simply the latest."
+                    },
+                    "email": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "phone": {
+                        "type": "string",
+                        "nullable": true
+                    }
+                }
+            },
+            "Shift": {
+                "type": "object",
+                "description": "One card in the scheduling grid.",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "The shift ASSIGNMENT id, not the shift id. A Humanity shift can hold several employees and the grid draws one card per person.",
+                        "example": "42"
+                    },
+                    "shift_id": {
+                        "type": "integer",
+                        "description": "Use THIS for update and delete calls.",
+                        "example": 17
+                    },
+                    "humanity_shift_id": {
+                        "type": "string",
+                        "nullable": true,
+                        "example": "9001"
+                    },
+                    "employee_id": {
+                        "type": "string",
+                        "example": "501"
+                    },
+                    "shift_date": {
+                        "type": "string",
+                        "format": "date",
+                        "description": "Local business date of the shift's START.",
+                        "example": "2026-08-06"
+                    },
+                    "day_index": {
+                        "type": "integer",
+                        "nullable": true,
+                        "minimum": 0,
+                        "maximum": 6,
+                        "description": "Position within the requested week, computed server-side against the store's week_start_dow. Never derive this client-side."
+                    },
+                    "start_time": {
+                        "type": "string",
+                        "pattern": "^\\d{2}:\\d{2}$",
+                        "example": "09:00"
+                    },
+                    "end_time": {
+                        "type": "string",
+                        "pattern": "^\\d{2}:\\d{2}$",
+                        "example": "17:00"
+                    },
+                    "starts_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": true,
+                        "description": "UTC instant. Use for sorting and overlap checks."
+                    },
+                    "ends_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": true
+                    },
+                    "duration_minutes": {
+                        "type": "integer",
+                        "description": "True elapsed minutes in the store's timezone. USE THIS for hours — wall-clock arithmetic over start/end is wrong on the two DST days a year (22:00-06:00 is 540 minutes on the fall-back night, not 480), and this is the payroll-facing number.",
+                        "example": 480
+                    },
+                    "crosses_midnight": {
+                        "type": "boolean",
+                        "description": "Routine, not exceptional: the store closes at 00:00."
+                    },
+                    "label": {
+                        "type": "string",
+                        "nullable": true,
+                        "example": "Morning"
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": [
+                            "morning",
+                            "evening",
+                            "night",
+                            "split",
+                            "custom"
+                        ]
+                    },
+                    "note": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "is_recurring": {
+                        "type": "boolean"
+                    },
+                    "recurring_group_id": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "is_published": {
+                        "type": "boolean",
+                        "description": "Deleting a published shift requires ?confirm=true."
+                    },
+                    "department": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "origin": {
+                        "type": "string",
+                        "enum": [
+                            "operations",
+                            "humanity",
+                            "reconciler"
+                        ],
+                        "description": "`humanity`/`reconciler` means it was created or last changed in Humanity's own app, not here. Worth surfacing — it explains why an unfamiliar shift appeared, or why a local edit was overwritten. Humanity always wins."
+                    },
+                    "updated_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": true
+                    }
+                }
+            },
+            "ActualShift": {
+                "type": "object",
+                "description": "What actually happened, as reviewed by a manager. Owned entirely by this service and never pushed to Humanity.",
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "employee_id": {
+                        "type": "string"
+                    },
+                    "planned_shift_id": {
+                        "type": "string",
+                        "nullable": true,
+                        "description": "The originating shift ASSIGNMENT id. Null for ad-hoc coverage."
+                    },
+                    "shift_date": {
+                        "type": "string",
+                        "format": "date"
+                    },
+                    "day_index": {
+                        "type": "integer",
+                        "nullable": true
+                    },
+                    "start_time": {
+                        "type": "string",
+                        "example": "09:00"
+                    },
+                    "end_time": {
+                        "type": "string",
+                        "example": "17:00"
+                    },
+                    "duration_minutes": {
+                        "type": "integer"
+                    },
+                    "label": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": [
+                            "morning",
+                            "evening",
+                            "night",
+                            "split",
+                            "custom"
+                        ]
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "confirmed",
+                            "modified",
+                            "absent",
+                            "added"
+                        ],
+                        "description": "DERIVED server-side, never accepted from the client: same times as the plan -> confirmed, different -> modified, no planned counterpart -> added. Letting the caller assert it would let it drift from the times it describes."
+                    },
+                    "note": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "source": {
+                        "type": "string",
+                        "enum": [
+                            "manual",
+                            "timeclock"
+                        ]
+                    }
+                }
+            },
+            "AvailabilityRule": {
+                "type": "object",
+                "description": "A BLOCKED window. Hiring stores the inverse (when someone IS available); the backend inverts it against store hours and layers manager overrides on top. An employee with no availability on file is treated as fully available.",
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "employee_id": {
+                        "type": "string"
+                    },
+                    "day_index": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 6
+                    },
+                    "date": {
+                        "type": "string",
+                        "format": "date"
+                    },
+                    "all_day": {
+                        "type": "boolean"
+                    },
+                    "start_time": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "end_time": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "reason": {
+                        "type": "string",
+                        "example": "Not available on Saturdays"
+                    },
+                    "source": {
+                        "type": "string",
+                        "enum": [
+                            "employee_profile",
+                            "override"
+                        ],
+                        "description": "`employee_profile` is derived from their hiring record and is read-only here (change it in HiringPizza). `override` was entered by a manager and can be deleted."
+                    }
+                }
+            },
+            "TimeOffEntry": {
+                "type": "object",
+                "description": "Already expanded to ONE ENTRY PER DAY, because the grid is per-day and shouldn't do calendar maths.",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "Synthetic, unique per day: `{time_off_id}-{day_index}`."
+                    },
+                    "time_off_id": {
+                        "type": "string",
+                        "description": "The underlying record; use this to delete."
+                    },
+                    "employee_id": {
+                        "type": "string"
+                    },
+                    "day_index": {
+                        "type": "integer"
+                    },
+                    "date": {
+                        "type": "string",
+                        "format": "date"
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": [
+                            "pto",
+                            "vacation",
+                            "sick",
+                            "unpaid",
+                            "other"
+                        ]
+                    },
+                    "label": {
+                        "type": "string"
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "pending",
+                            "approved",
+                            "denied"
+                        ]
+                    },
+                    "origin": {
+                        "type": "string",
+                        "enum": [
+                            "humanity",
+                            "operations"
+                        ],
+                        "description": "Humanity-sourced rows cannot be deleted here."
+                    }
+                }
+            },
+            "PublishedSchedule": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "week_start_date": {
+                        "type": "string",
+                        "format": "date"
+                    },
+                    "week_label": {
+                        "type": "string",
+                        "nullable": true,
+                        "example": "Aug 4 – Aug 10, 2026"
+                    },
+                    "published_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": true
+                    },
+                    "unpublished_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": true,
+                        "description": "Set when superseded by a later publish of the same week."
+                    },
+                    "screenshot_url": {
+                        "type": "string",
+                        "nullable": true,
+                        "description": "A URL to a stored file, NOT a data URL."
+                    },
+                    "shift_count": {
+                        "type": "integer"
+                    },
+                    "total_hours": {
+                        "type": "number",
+                        "format": "float"
+                    },
+                    "shifts": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Shift"
+                        },
+                        "description": "The frozen snapshot. Only returned by the show endpoint."
+                    }
+                }
+            },
+            "ScheduleTemplate": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "description": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": true
+                    },
+                    "shift_count": {
+                        "type": "integer"
+                    },
+                    "total_hours": {
+                        "type": "number",
+                        "format": "float"
+                    },
+                    "shifts": {
+                        "type": "array",
+                        "description": "Only returned by the show endpoint. Week-relative by design — that is what makes a template re-appliable to any week.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "employee_id": {
+                                    "type": "string"
+                                },
+                                "day_index": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 6
+                                },
+                                "start_time": {
+                                    "type": "string"
+                                },
+                                "end_time": {
+                                    "type": "string"
+                                },
+                                "label": {
+                                    "type": "string",
+                                    "nullable": true
+                                },
+                                "type": {
+                                    "type": "string"
+                                },
+                                "note": {
+                                    "type": "string",
+                                    "nullable": true
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "BulkOperation": {
+                "type": "object",
+                "description": "There is deliberately NO ROLLBACK. Deleting shifts we already created in order to undo is more destructive than a partial week, especially once employees have seen it — so `completed_with_errors` is a normal outcome and failures are surfaced per item.",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "ULID batch id."
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": [
+                            "copy_week",
+                            "apply_template",
+                            "clear_week",
+                            "publish_week",
+                            "unpublish_week",
+                            "restore_published",
+                            "recurring_expand",
+                            "retry_failed"
+                        ]
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "queued",
+                            "processing",
+                            "completed",
+                            "completed_with_errors",
+                            "failed"
+                        ]
+                    },
+                    "total": {
+                        "type": "integer"
+                    },
+                    "succeeded": {
+                        "type": "integer"
+                    },
+                    "failed": {
+                        "type": "integer"
+                    },
+                    "progress_percent": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 100
+                    },
+                    "week_start_date": {
+                        "type": "string",
+                        "format": "date",
+                        "nullable": true
+                    },
+                    "started_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": true
+                    },
+                    "finished_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": true
+                    },
+                    "error": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "items": {
+                        "type": "array",
+                        "description": "ONLY the failed items. A successful copy-week would otherwise return ~70 rows nobody reads.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "sequence": {
+                                    "type": "integer",
+                                    "description": "In replace mode, deletes are sequenced before creates so a mid-run failure is visible rather than silently doubling the week."
+                                },
+                                "action": {
+                                    "type": "string",
+                                    "enum": [
+                                        "create",
+                                        "update",
+                                        "delete",
+                                        "publish",
+                                        "unpublish"
+                                    ]
+                                },
+                                "status": {
+                                    "type": "string",
+                                    "enum": [
+                                        "pending",
+                                        "processing",
+                                        "succeeded",
+                                        "failed",
+                                        "skipped"
+                                    ]
+                                },
+                                "employee_id": {
+                                    "type": "string",
+                                    "nullable": true
+                                },
+                                "employee_name": {
+                                    "type": "string",
+                                    "nullable": true
+                                },
+                                "shift_date": {
+                                    "type": "string",
+                                    "nullable": true
+                                },
+                                "start_time": {
+                                    "type": "string",
+                                    "nullable": true
+                                },
+                                "end_time": {
+                                    "type": "string",
+                                    "nullable": true
+                                },
+                                "error_code": {
+                                    "type": "string",
+                                    "nullable": true
+                                },
+                                "error_message": {
+                                    "type": "string",
+                                    "nullable": true
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "EmployeeSyncStatus": {
+                "type": "object",
+                "properties": {
+                    "employee_id": {
+                        "type": "string"
+                    },
+                    "employee_name": {
+                        "type": "string"
+                    },
+                    "humanity_employee_id": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "synced": {
+                        "type": "boolean",
+                        "description": "Poll until true, then replay the request that returned EMPLOYEE_NOT_SYNCED."
+                    },
+                    "sync_request": {
+                        "type": "object",
+                        "nullable": true,
+                        "properties": {
+                            "status": {
+                                "type": "string",
+                                "enum": [
+                                    "requested",
+                                    "fulfilled",
+                                    "failed"
+                                ]
+                            },
+                            "requested_at": {
+                                "type": "string",
+                                "format": "date-time",
+                                "nullable": true
+                            },
+                            "fulfilled_at": {
+                                "type": "string",
+                                "format": "date-time",
+                                "nullable": true
+                            },
+                            "attempts": {
+                                "type": "integer"
+                            },
+                            "last_error": {
+                                "type": "string",
+                                "nullable": true
+                            }
+                        }
+                    }
+                }
+            },
+            "ScheduleWeek": {
+                "type": "object",
+                "description": "Everything the grid needs in one round trip. Eight separate calls would show the user a week assembling itself piece by piece.",
+                "properties": {
+                    "week": {
+                        "type": "object",
+                        "properties": {
+                            "start": {
+                                "type": "string",
+                                "format": "date",
+                                "description": "The TRUE week start, after snapping the requested date.",
+                                "example": "2026-08-04"
+                            },
+                            "end": {
+                                "type": "string",
+                                "format": "date",
+                                "example": "2026-08-10"
+                            },
+                            "label": {
+                                "type": "string",
+                                "example": "Aug 4 – Aug 10, 2026"
+                            },
+                            "week_start_dow": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 6,
+                                "description": "0=Sun..6=Sat. 2 (Tuesday) for these stores — a per-store setting, not a constant.",
+                                "example": 2
+                            },
+                            "day_dates": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "description": "Day-of-month numbers for the seven columns."
+                            },
+                            "full_dates": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string",
+                                    "format": "date"
+                                }
+                            }
+                        }
+                    },
+                    "store": {
+                        "type": "object",
+                        "properties": {
+                            "store_number": {
+                                "type": "string",
+                                "example": "03759-00001"
+                            },
+                            "name": {
+                                "type": "string",
+                                "nullable": true
+                            },
+                            "timezone": {
+                                "type": "string",
+                                "example": "America/Chicago"
+                            },
+                            "open_time": {
+                                "type": "string",
+                                "example": "09:00"
+                            },
+                            "close_time": {
+                                "type": "string",
+                                "example": "00:00",
+                                "description": "Midnight means the END of the day, never a zero-length day."
+                            },
+                            "slot_minutes": {
+                                "type": "integer",
+                                "example": 30
+                            },
+                            "overtime_threshold_hours": {
+                                "type": "number",
+                                "format": "float",
+                                "example": 40
+                            },
+                            "default_labor_rate": {
+                                "type": "number",
+                                "format": "float",
+                                "nullable": true
+                            }
+                        }
+                    },
+                    "employees": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Employee"
+                        }
+                    },
+                    "departments": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string"
+                                },
+                                "name": {
+                                    "type": "string"
+                                },
+                                "humanity_position_id": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "shifts": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Shift"
+                        }
+                    },
+                    "actual_shifts": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/ActualShift"
+                        },
+                        "description": "Empty when mode=planned."
+                    },
+                    "availability": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/AvailabilityRule"
+                        }
+                    },
+                    "time_off": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/TimeOffEntry"
+                        }
+                    },
+                    "published": {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/PublishedSchedule"
+                            }
+                        ],
+                        "nullable": true
+                    },
+                    "stats": {
+                        "type": "object",
+                        "properties": {
+                            "total_hours": {
+                                "type": "number",
+                                "format": "float"
+                            },
+                            "total_shifts": {
+                                "type": "integer"
+                            },
+                            "active_employees": {
+                                "type": "integer"
+                            },
+                            "labor_cost": {
+                                "type": "number",
+                                "format": "float",
+                                "description": "Real, from replicated pay history — the rate effective on each shift's date."
+                            }
+                        }
+                    },
+                    "overtime_employee_ids": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "conflicts": {
+                        "type": "array",
+                        "description": "Authoritative. Computed on UTC instants, so unlike a wall-clock client check it catches a 22:00-02:00 shift colliding with the next morning's 01:00-09:00 one.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "employee_id": {
+                                    "type": "string"
+                                },
+                                "shift_a_id": {
+                                    "type": "string"
+                                },
+                                "shift_b_id": {
+                                    "type": "string"
+                                },
+                                "shift_date": {
+                                    "type": "string",
+                                    "format": "date",
+                                    "nullable": true
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "Paginator": {
+                "type": "object",
+                "description": "Standard Laravel length-aware paginator. Rows are in `data`.",
+                "properties": {
+                    "current_page": {
+                        "type": "integer"
+                    },
+                    "data": {
+                        "type": "array",
+                        "items": []
+                    },
+                    "first_page_url": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "from": {
+                        "type": "integer",
+                        "nullable": true
+                    },
+                    "last_page": {
+                        "type": "integer"
+                    },
+                    "last_page_url": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "next_page_url": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "path": {
+                        "type": "string"
+                    },
+                    "per_page": {
+                        "type": "integer"
+                    },
+                    "prev_page_url": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "to": {
+                        "type": "integer",
+                        "nullable": true
+                    },
+                    "total": {
+                        "type": "integer"
+                    }
+                }
+            }
+        },
+        "responses": {
+            "Unauthorized": {
+                "description": "Missing or invalid bearer token.",
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "Forbidden": {
+                "description": "pizzasys says this subject may not perform this action on this store. A permissions problem, not a bug.",
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "NotFound": {
+                "description": "Store, shift or related record not found in this scope.",
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "ValidationFailed": {
+                "description": "Request validation failed.",
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "$ref": "#/components/schemas/ValidationError"
+                        }
+                    }
+                }
+            },
+            "WriteConflict": {
+                "description": "A guard rejected the write.\n\n- `EMPLOYEE_NOT_SYNCED` — resumable; poll and replay (nothing was written).\n- `SHIFT_CONFLICT`, `EMPLOYEE_UNAVAILABLE`, `EMPLOYEE_ON_TIME_OFF` — overridable; re-send the identical payload with `force: true` after the manager confirms.",
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "oneOf": [
+                                {
+                                    "$ref": "#/components/schemas/EmployeeNotSyncedError"
+                                },
+                                {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            ]
+                        }
+                    }
+                }
+            },
+            "UnprocessableWrite": {
+                "description": "Either standard validation, or a domain error:\n\n- `INVALID_LOCAL_TIME` — the wall-clock time does not exist (DST spring-forward).\n- `STORE_NOT_MAPPED` / `POSITION_NOT_MAPPED` — a setup problem, not a user error: run `humanity:sync-catalog` and map the store.",
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "oneOf": [
+                                {
+                                    "$ref": "#/components/schemas/Error"
+                                },
+                                {
+                                    "$ref": "#/components/schemas/ValidationError"
+                                }
+                            ]
+                        }
+                    }
+                }
+            },
+            "HumanityWriteFailed": {
+                "description": "TCP Humanity rejected the write (`HUMANITY_WRITE_FAILED`). Nothing was persisted here — the write-through ordering guarantees it — so retrying is safe.",
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "$ref": "#/components/schemas/Error"
+                        }
+                    }
+                }
+            },
+            "HumanityRateLimited": {
+                "description": "Humanity is throttling us (`HUMANITY_RATE_LIMITED`, its application status 91). Honour `Retry-After`.",
+                "headers": {
+                    "Retry-After": {
+                        "schema": {
+                            "type": "integer"
+                        },
+                        "description": "Seconds to wait."
+                    }
+                },
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "$ref": "#/components/schemas/Error"
+                        }
+                    }
+                }
+            },
+            "BulkAccepted": {
+                "description": "Queued. Poll `GET /v1/stores/{storeId}/schedule/bulk/{batchId}` until status is terminal.",
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "data": {
+                                    "$ref": "#/components/schemas/BulkOperation"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "x-error-codes": {
+        "EMPLOYEE_NOT_SYNCED": {
+            "status": 409,
+            "action": "Resumable. Poll the sync-status endpoint, then replay the original request."
+        },
+        "SHIFT_CONFLICT": {
+            "status": 409,
+            "action": "Offer \"schedule anyway\"; retry with force=true."
+        },
+        "EMPLOYEE_UNAVAILABLE": {
+            "status": 409,
+            "action": "Offer \"schedule anyway\"; retry with force=true."
+        },
+        "EMPLOYEE_ON_TIME_OFF": {
+            "status": 409,
+            "action": "Offer \"schedule anyway\"; retry with force=true."
+        },
+        "SHIFT_PUBLISHED": {
+            "status": 409,
+            "action": "Confirm with the user, then retry with ?confirm=true."
+        },
+        "TIME_OFF_READ_ONLY": {
+            "status": 409,
+            "action": "Explain it must be withdrawn in Humanity."
+        },
+        "INVALID_LOCAL_TIME": {
+            "status": 422,
+            "action": "The time does not exist (DST spring-forward). Ask for another."
+        },
+        "STORE_NOT_MAPPED": {
+            "status": 422,
+            "action": "Setup problem: the store has no Humanity location. Run humanity:sync-catalog."
+        },
+        "POSITION_NOT_MAPPED": {
+            "status": 422,
+            "action": "Setup problem: the store has no default Humanity position."
+        },
+        "EMPLOYEE_NOT_IN_STORE": {
+            "status": 404,
+            "action": "Stale roster; refetch the week."
+        },
+        "SHIFT_UNASSIGNED": {
+            "status": 422,
+            "action": "The shift has no assignment to update. Should not happen; report it."
+        },
+        "HUMANITY_WRITE_FAILED": {
+            "status": 502,
+            "action": "Upstream rejected it. Nothing was saved; retrying is safe."
+        },
+        "HUMANITY_RATE_LIMITED": {
+            "status": 503,
+            "action": "Back off and honour Retry-After."
+        }
+    }
+}
