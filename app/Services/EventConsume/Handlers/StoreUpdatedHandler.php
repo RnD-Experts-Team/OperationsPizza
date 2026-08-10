@@ -42,24 +42,9 @@ class StoreUpdatedHandler implements EventHandlerInterface
                 $update['name'] = $this->stringOrNull(data_get($changed, 'name.to'));
             }
 
-            if (array_key_exists('is_active', $changed)) {
-                $update['is_active'] = (bool) data_get($changed, 'is_active.to');
-            }
-
-            if (array_key_exists('metadata', $changed)) {
-                // Only move the timezone when metadata actually supplied one.
-                // resolveTimezone() would fall back to the app default, and
-                // writing that over a good stored value silently breaks every
-                // shift time for the store.
-                $timezone = $this->timezoneFromMetadata(
-                    data_get($changed, 'metadata.to'),
-                    (string) $store->store_number
-                );
-
-                if ($timezone !== null) {
-                    $update['timezone'] = $timezone;
-                }
-            }
+            // is_active and metadata.timezone are intentionally ignored — we
+            // store neither. See StoreCreatedHandler for why, and
+            // StoreTimezoneResolver for where the timezone comes from instead.
 
             if ($update !== []) {
                 $store->update($update);

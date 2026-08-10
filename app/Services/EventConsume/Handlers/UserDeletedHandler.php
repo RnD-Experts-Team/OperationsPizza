@@ -4,7 +4,7 @@ namespace App\Services\EventConsume\Handlers;
 
 use App\Models\User;
 use App\Services\EventConsume\EventHandlerInterface;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class UserDeletedHandler implements EventHandlerInterface
 {
@@ -21,15 +21,18 @@ class UserDeletedHandler implements EventHandlerInterface
             throw new \Exception('UserDeletedHandler: missing/invalid user_id');
         }
 
-        DB::transaction(function () use ($userId) {
-            // Deactivate rather than delete. Scheduling rows carry authorship
-            // (shifts.created_by_user_id, published_schedules.published_by_user_id),
-            // and removing the row would either break those references or erase
-            // who did what. Authentication is unaffected either way — pizzasys
-            // stops issuing tokens for a deleted user, and this service never
-            // authenticates locally.
-            User::query()->whereKey($userId)->update(['is_active' => false]);
-        });
+        // Deliberately keep the row and change nothing.
+        //
+        // Scheduling rows carry authorship (shifts.created_by_user_id,
+        // published_schedules.published_by_user_id); deleting the user would
+        // erase who built a schedule, and we hold no flag to mark them inactive
+        // because pizzasys owns that decision. Access is unaffected either way:
+        // pizzasys stops issuing tokens for a deleted user, and every request
+        // here is verified against it, so a lingering row grants nothing.
+        Log::info('pizzasys user deleted; keeping the local row for authorship', [
+            'user_id' => $userId,
+            'exists_locally' => User::query()->whereKey($userId)->exists(),
+        ]);
     }
 
     private function asInt(mixed $v): int

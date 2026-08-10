@@ -20,15 +20,15 @@ class Store extends Model
         'id',
         'store_number',
         'name',
-        'timezone',
-        'is_active',
     ];
 
+    /**
+     * Identity only. `is_active` lives in pizzasys, and the scheduling timezone
+     * comes from the mapped Humanity location — see StoreTimezoneResolver.
+     */
     protected function casts(): array
     {
-        return [
-            'is_active' => 'boolean',
-        ];
+        return [];
     }
 
     public function scheduleSettings(): HasOne

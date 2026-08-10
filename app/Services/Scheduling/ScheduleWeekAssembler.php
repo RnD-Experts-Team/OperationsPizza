@@ -29,6 +29,7 @@ class ScheduleWeekAssembler
         private readonly AvailabilityProjector $availability,
         private readonly LaborCostCalculator $labor,
         private readonly EmployeePresenter $employees,
+        private readonly StoreTimezoneResolver $timezones,
     ) {
     }
 
@@ -92,7 +93,7 @@ class ScheduleWeekAssembler
             'store' => [
                 'store_number' => $store->store_number,
                 'name' => $store->name,
-                'timezone' => $store->timezone,
+                'timezone' => $this->timezones->for($store),
                 'open_time' => substr((string) $settings->open_time, 0, 5),
                 'close_time' => substr((string) $settings->close_time, 0, 5),
                 'slot_minutes' => (int) $settings->slot_minutes,

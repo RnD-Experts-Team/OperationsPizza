@@ -44,6 +44,7 @@ class ShiftWriteService
         private readonly HumanityPositionResolver $positions,
         private readonly HumanitySyncLogger $syncLog,
         private readonly ShiftTimeResolver $times,
+        private readonly StoreTimezoneResolver $timezones,
         private readonly WeekResolver $weeks,
         private readonly ConflictDetector $conflicts,
         private readonly AvailabilityProjector $availability,
@@ -61,7 +62,7 @@ class ShiftWriteService
     public function create(Store $store, array $data, ?Request $request = null): Shift
     {
         $settings = $store->settings();
-        $timezone = (string) ($store->timezone ?: config('operations.default_timezone'));
+        $timezone = $this->timezones->for($store);
 
         $employee = $this->resolveEmployee($store, (int) $data['employee_id']);
 
@@ -155,7 +156,7 @@ class ShiftWriteService
     public function update(Store $store, Shift $shift, array $data, ?Request $request = null): Shift
     {
         $settings = $store->settings();
-        $timezone = (string) ($store->timezone ?: config('operations.default_timezone'));
+        $timezone = $this->timezones->for($store);
 
         $assignment = $shift->assignments()->first();
 

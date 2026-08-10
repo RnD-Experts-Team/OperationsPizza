@@ -23,19 +23,21 @@ class UserCreatedHandler implements EventHandlerInterface
         }
 
         $name = (string) data_get($userPayload, 'name', 'Unknown');
-        $emailVerifiedAt = data_get($userPayload, 'email_verified_at');
 
-        DB::transaction(function () use ($id, $name, $email, $emailVerifiedAt) {
-            // Only replicate what the event gives us; do not invent password/role/etc.
-            // A redelivery must re-activate a user we previously deactivated via
-            // auth.v1.user.deleted, hence is_active is set here too.
+        DB::transaction(function () use ($id, $name, $email) {
+            // Identity only. The event also carries email_verified_at, roles and
+            // an active flag; none are stored, because pizzasys owns the whole
+            // authentication and authorization decision and this service asks it
+            // on every request (AuthTokenStoreScopeMiddleware). A local copy
+            // could only ever go stale and disagree.
+            //
+            // The row exists purely so shifts.created_by_user_id and
+            // published_schedules.published_by_user_id can name a human.
             User::query()->updateOrCreate(
                 ['id' => $id],
                 [
                     'name'  => $name,
                     'email' => $email,
-                    'email_verified_at' => $emailVerifiedAt,
-                    'is_active' => true,
                 ]
             );
         });

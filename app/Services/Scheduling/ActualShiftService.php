@@ -15,8 +15,10 @@ use App\Models\Store;
  */
 class ActualShiftService
 {
-    public function __construct(private readonly ShiftTimeResolver $times)
-    {
+    public function __construct(
+        private readonly ShiftTimeResolver $times,
+        private readonly StoreTimezoneResolver $timezones,
+    ) {
     }
 
     /** One click: "they worked exactly what was planned". */
@@ -61,7 +63,7 @@ class ActualShiftService
      */
     public function upsert(Store $store, array $data, ?int $userId = null): ActualShift
     {
-        $timezone = (string) ($store->timezone ?: config('operations.default_timezone'));
+        $timezone = $this->timezones->for($store);
 
         $time = $this->times->resolve(
             $data['shift_date'],

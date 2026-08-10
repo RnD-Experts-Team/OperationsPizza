@@ -13,6 +13,7 @@ use App\Services\Humanity\HumanitySyncLogger;
 use App\Services\OperationsEvents\OperationsEventFactory;
 use App\Services\OperationsEvents\OperationsOutboxService;
 use App\Services\Scheduling\ShiftFingerprint;
+use App\Services\Scheduling\StoreTimezoneResolver;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -37,6 +38,7 @@ class HumanityShiftReconciler
         private readonly HumanityPositionResolver $positions,
         private readonly HumanitySyncLogger $syncLog,
         private readonly ShiftFingerprint $fingerprint,
+        private readonly StoreTimezoneResolver $timezones,
         private readonly OperationsEventFactory $events,
         private readonly OperationsOutboxService $outbox,
     ) {
@@ -65,7 +67,7 @@ class HumanityShiftReconciler
 
     private function run(Store $store, CarbonImmutable $from, CarbonImmutable $to, bool $dryRun, ReconciliationReport $report): ReconciliationReport
     {
-        $timezone = (string) ($store->timezone ?: config('operations.default_timezone'));
+        $timezone = $this->timezones->for($store);
         $locationId = $this->positions->locationId($store);
 
         $snapshotAt = CarbonImmutable::now();

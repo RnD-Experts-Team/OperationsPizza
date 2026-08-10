@@ -34,6 +34,8 @@ HiringPizza ─hiring.v1.employee.*──┘         │
 | Shifts store **both** wall-clock and UTC | Wall clock is what we display and what Humanity speaks; UTC is what every query, sort and overlap check uses. Comparing `TIME` columns breaks the moment a shift crosses midnight — and the store closes at 00:00, so that is routine. |
 | `duration_minutes` is the true UTC delta | On the two DST days a year it differs from the clock-face duration. It is the payroll-facing number, so nothing should recompute hours from the wall-clock strings. |
 | The week starts **Tuesday** | `store_schedule_settings.week_start_dow`, not a constant. Shifts store an absolute date; `day_index` is computed per request and never persisted (the sole exception is `schedule_template_shifts`, which is week-relative by nature). |
+| The scheduling timezone comes from **Humanity**, not from `stores` | `StoreTimezoneResolver` reads it off the mapped Humanity location. Humanity has no per-request timezone and interprets every date and `HH:MM` we send in its location's local time, so a second local copy could only ever drift from the value that actually decides what a shift means. Falls back to `OPERATIONS_DEFAULT_TIMEZONE` for an unmapped store. |
+| `users` and `stores` hold **identity only** | No `is_active`, no roles, no verification state. pizzasys owns all of that and is consulted on every request, so a mirrored copy would go stale and disagree. The local rows exist so `created_by_user_id` can name a human and so shifts can be store-scoped. |
 | Bulk work is always async | A copy-week is ~70 Humanity calls against an undocumented rate limit. |
 | Bulk work never rolls back | Deleting shifts we already created to "undo" is worse than a partial week, especially once employees have seen it. Failures surface per item with Retry Failed. |
 
@@ -90,6 +92,16 @@ These must exist or the service does nothing useful:
    request returns 403.
 4. **A Humanity app** (Settings → API v2) and a **Manager/Supervisor service
    account**, in both sandbox and production.
+5. **Store ↔ Humanity mappings.** Nothing is matched by name at runtime, so
+   until these rows exist every shift write fails with a 422:
+   ```bash
+   php artisan humanity:sync-catalog                       # fetch the catalog
+   php artisan humanity:map-location --list                # see both sides
+   php artisan humanity:map-location  --store=03759-00001  # STORE_NOT_MAPPED
+   php artisan humanity:map-position  --store=03759-00001 --default
+   ```
+   Both commands are interactive when run without flags, and refuse ids that
+   Humanity doesn't actually have.
 
 ### Running
 
@@ -107,6 +119,8 @@ php artisan schedule:work
 | `nats:consume` | Long-running JetStream consumer (auth + hiring events). |
 | `outbox:publish-pending` | Sweeper for the transactional outbox. Scheduled every 5 min. |
 | `humanity:sync-catalog` | Pulls Humanity locations + positions into the mapping tables. `--auto-map` matches stores by name. |
+| `humanity:map-location` | Binds a store to a Humanity location. **Required** — store numbers never match Humanity's location names, so nothing is inferred at runtime. `--list` shows both sides. |
+| `humanity:map-position` | Maps a position to a Humanity position for a store. **A `--default` row is mandatory** or every shift create fails `POSITION_NOT_MAPPED`. |
 | `humanity:reconcile` | Reconciles our shift mirror against Humanity. **Always run `--dry-run` first against production.** |
 | `humanity:sync-leave` | Mirrors Humanity leave into `time_off`. |
 
