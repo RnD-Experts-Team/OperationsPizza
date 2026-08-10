@@ -12,7 +12,7 @@ use Illuminate\Foundation\Auth\User as Authenticatable;
  * Auth::login() after pizzasys has already verified the token; there is no
  * password here and nothing local ever checks credentials.
  */
-#[Fillable(['id', 'name', 'email', 'email_verified_at', 'is_active'])]
+#[Fillable(['id', 'name', 'email'])]
 class User extends Authenticatable
 {
     use ReplicatedModel;
