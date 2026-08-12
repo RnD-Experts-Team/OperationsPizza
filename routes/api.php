@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\V1\ActualShiftController;
 use App\Http\Controllers\Api\V1\AvailabilityController;
+use App\Http\Controllers\Api\V1\ClockController;
 use App\Http\Controllers\Api\V1\EmployeeSyncController;
 use App\Http\Controllers\Api\V1\HealthController;
 use App\Http\Controllers\Api\V1\PublishedScheduleController;
@@ -73,6 +74,15 @@ Route::prefix('v1')->middleware('auth.token.store')->group(function (): void {
         Route::post('schedule/bulk/clear-week', [ScheduleBulkController::class, 'clearWeek'])->name('api.v1.bulk.clear-week');
         Route::get('schedule/bulk/{batchId}', [ScheduleBulkController::class, 'show'])->name('api.v1.bulk.show');
         Route::post('schedule/bulk/{batchId}/retry-failed', [ScheduleBulkController::class, 'retryFailed'])->name('api.v1.bulk.retry');
+
+        // ---- clocking (TCP Manager+, NOT Humanity) ---------------------------
+        // Worked time lives in TCP; shifts live in Humanity. Kept apart on
+        // purpose — nothing here touches the `shifts` tables.
+        Route::post('employees/{employeeId}/clock-in', [ClockController::class, 'clockIn'])->whereNumber('employeeId')->name('api.v1.clock.in');
+        Route::post('employees/{employeeId}/clock-out', [ClockController::class, 'clockOut'])->whereNumber('employeeId')->name('api.v1.clock.out');
+        Route::post('employees/{employeeId}/break-start', [ClockController::class, 'breakStart'])->whereNumber('employeeId')->name('api.v1.clock.break-start');
+        Route::post('employees/{employeeId}/break-end', [ClockController::class, 'breakEnd'])->whereNumber('employeeId')->name('api.v1.clock.break-end');
+        Route::get('employees/{employeeId}/clock-status', [ClockController::class, 'status'])->whereNumber('employeeId')->name('api.v1.clock.status');
 
         // ---- the unsynced-employee loop ---------------------------------------
         Route::get('employees/{employeeId}/sync-status', [EmployeeSyncController::class, 'status'])->whereNumber('employeeId')->name('api.v1.employees.sync-status');

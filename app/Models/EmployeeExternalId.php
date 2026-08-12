@@ -13,6 +13,15 @@ class EmployeeExternalId extends Model
 {
     public const HUMANITY = 'Humanity ID';
 
+    /**
+     * TCP Manager+ / TimeClock Plus. TCP is the system of record for employees
+     * and the clocking system; its `employeeId` is client-supplied, so for
+     * anyone HiringPizza creates this will equal our own employee id. It exists
+     * as a stored link because the pre-existing roster carries ids we didn't
+     * choose.
+     */
+    public const TCP = 'TCP ID';
+
     protected $fillable = ['employee_id', 'id_type', 'value'];
 
     public function employee(): BelongsTo

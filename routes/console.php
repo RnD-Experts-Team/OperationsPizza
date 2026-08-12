@@ -30,3 +30,12 @@ Schedule::command('humanity:sync-catalog')
     ->dailyAt('03:00')
     ->withoutOverlapping()
     ->skip(fn () => config('humanity.driver') !== 'http');
+
+// TCP Manager+ worked hours -> actual_shifts. Incremental via TCP's updatedOn
+// delta filter, so each run costs a handful of calls rather than re-reading the
+// fortnight. Hourly rather than every 5 minutes because the daily quota is
+// 2500 for the whole service — see config/tcp.php.
+Schedule::command('tcp:sync-worksegments')
+    ->hourly()
+    ->withoutOverlapping()
+    ->skip(fn () => config('tcp.driver') !== 'http');

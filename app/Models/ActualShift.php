@@ -21,6 +21,8 @@ class ActualShift extends Model
         'start_time', 'end_time', 'starts_at_utc', 'ends_at_utc',
         'duration_minutes', 'crosses_midnight', 'label', 'shift_type',
         'status', 'note', 'source', 'humanity_timeclock_id',
+        'tcp_work_segment_id', 'has_missed_punch',
+        'actual_punch_in_at', 'actual_punch_out_at',
         'reviewed_by_user_id', 'reviewed_at',
     ];
 
@@ -32,6 +34,9 @@ class ActualShift extends Model
             'ends_at_utc' => 'datetime',
             'duration_minutes' => 'integer',
             'crosses_midnight' => 'boolean',
+            'has_missed_punch' => 'boolean',
+            'actual_punch_in_at' => 'datetime',
+            'actual_punch_out_at' => 'datetime',
             'reviewed_at' => 'datetime',
         ];
     }

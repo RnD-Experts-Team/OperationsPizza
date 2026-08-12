@@ -6,6 +6,8 @@ use App\Services\Humanity\Exceptions\HumanityException;
 use App\Services\Humanity\Exceptions\HumanityRateLimitException;
 use App\Services\Scheduling\Exceptions\InvalidLocalTimeException;
 use App\Services\Scheduling\Exceptions\SchedulingException;
+use App\Services\Tcp\Exceptions\TcpException;
+use App\Services\Tcp\Exceptions\TcpRateLimitException;
 use Illuminate\Http\JsonResponse;
 use Throwable;
 
@@ -43,6 +45,30 @@ class SchedulingExceptionRenderer
                 'message' => 'Humanity is rate limiting us. Please retry shortly.',
                 'error' => ['code' => $e->errorCode(), 'retry_after_seconds' => $e->retryAfterSeconds()],
             ], 503, ['Retry-After' => (string) $e->retryAfterSeconds()]);
+        }
+
+        if ($e instanceof TcpRateLimitException) {
+            // TCP allows only 2500 calls/day, so exhaustion is an expected
+            // operating condition. Tell the client when to come back rather
+            // than presenting it as a failure.
+            return response()->json([
+                'message' => $e->isDailyCap
+                    ? 'The time clock system has reached its daily request limit.'
+                    : 'The time clock system is rate limiting us. Please retry shortly.',
+                'error' => ['code' => $e->errorCode(), 'retry_after_seconds' => $e->retryAfterSeconds],
+            ], 503, ['Retry-After' => (string) $e->retryAfterSeconds]);
+        }
+
+        if ($e instanceof TcpException) {
+            return response()->json([
+                'message' => 'The time clock system (TCP) rejected this change.',
+                'error' => [
+                    'code' => 'TCP_WRITE_FAILED',
+                    'http_status' => $e->httpStatus,
+                    'request_id' => $e->requestId,
+                    'detail' => $e->getMessage(),
+                ],
+            ], 502);
         }
 
         if ($e instanceof HumanityException) {

@@ -34,6 +34,8 @@ class Employee extends Model
         'current_status_effective_date',
         'humanity_employee_id',
         'humanity_synced_at',
+        'tcp_employee_id',
+        'tcp_synced_at',
         'hiring_event_at',
     ];
 
@@ -44,6 +46,7 @@ class Employee extends Model
             'birth_date' => 'date',
             'current_status_effective_date' => 'date',
             'humanity_synced_at' => 'datetime',
+            'tcp_synced_at' => 'datetime',
             'hiring_event_at' => 'datetime',
         ];
     }
@@ -131,5 +134,11 @@ class Employee extends Model
     public function isLinkedToHumanity(): bool
     {
         return $this->humanity_employee_id !== null && $this->humanity_employee_id !== '';
+    }
+
+    /** Required before this employee can clock in or have worked hours attributed. */
+    public function isLinkedToTcp(): bool
+    {
+        return $this->tcp_employee_id !== null && $this->tcp_employee_id !== '';
     }
 }

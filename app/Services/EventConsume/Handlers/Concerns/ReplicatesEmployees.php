@@ -191,6 +191,32 @@ trait ReplicatesEmployees
             ->delete();
 
         $this->liftHumanityId($employee);
+        $this->liftTcpId($employee);
+    }
+
+    /**
+     * TCP Manager+ is the clocking system, so this link is what lets a punch or
+     * a worked segment be attributed to one of our employees. Same mechanism as
+     * the Humanity lift: HiringPizza records it as an external id and it rides
+     * along in the employee snapshot.
+     */
+    protected function liftTcpId(Employee $employee): void
+    {
+        $tcpId = $this->stringOrNull(
+            EmployeeExternalId::query()
+                ->where('employee_id', $employee->id)
+                ->where('id_type', EmployeeExternalId::TCP)
+                ->value('value')
+        );
+
+        if ($tcpId === $employee->tcp_employee_id) {
+            return;
+        }
+
+        $employee->forceFill([
+            'tcp_employee_id' => $tcpId,
+            'tcp_synced_at' => $tcpId === null ? null : now(),
+        ])->save();
     }
 
     protected function liftHumanityId(Employee $employee): void
