@@ -85,11 +85,31 @@ These must exist or the service does nothing useful:
    nats consumer add HIRING_EVENTS OPERATIONS_HIRING_CONSUMER --filter 'hiring.v1.>' --pull
    ```
    Plus the `*_TESTING_*` variants when `DEV_MODE=1`.
-2. **A `service_clients` row in pizzasys** named `operations-system`; its raw
-   token becomes `AUTH_SERVER_CALL_TOKEN`.
-3. **`auth_rules` rows in pizzasys** for `service = 'operations-system'`, with
-   `store_scope_mode` set so `{storeId}` is enforced. Without these every
-   request returns 403.
+
+   Create a *new* durable with `--deliver=all`. Stores, users and the employee
+   roster reach this service only as replayed events — there is no store API and
+   no importer — and the default `new` policy leaves the database empty without
+   ever reporting an error. `event_inbox` makes the replay idempotent.
+2. **Registration in pizzasys.** One seeder does the permissions, the
+   `service_clients` row and the `auth_rules` in one idempotent pass:
+   ```bash
+   php artisan db:seed --class=OperationsServiceSeeder   # in pizzasys
+   ```
+   It prints the raw token ONCE — that value is `AUTH_SERVER_CALL_TOKEN`. Only
+   its sha256 is stored, so re-run with `OPERATIONS_ROTATE_TOKEN=1` to reissue.
+
+   The service identity is **`Operations`**, and that one string has to be
+   identical in three places or every request 403s: `service_clients.name`,
+   `auth_rules.service`, and our `AUTH_SERVER_SERVICE_NAME`. (Do not confuse it
+   with `operations-system`, which is the unrelated `source` label on the events
+   we publish and the `service` field of the health payload.)
+3. **The employee roster.** Employees hired before HiringPizza's outbox existed
+   have no `employee.created` event for the replay to find. Manufacture them
+   from HiringPizza:
+   ```bash
+   php artisan hiring:republish-employees --dry-run   # in HiringPizza
+   php artisan hiring:republish-employees
+   ```
 4. **A Humanity app** (Settings → API v2) and a **Manager/Supervisor service
    account**, in both sandbox and production.
 5. **Store ↔ Humanity mappings.** Nothing is matched by name at runtime, so
