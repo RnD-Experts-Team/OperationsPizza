@@ -89,9 +89,25 @@ interface TcpClientInterface
 
     public function updateEmployee(string $employeeId, array $payload): array;
 
-    // --------------------------------------------------------------- job codes
+    // --------------------------------------------------------------- catalog
 
-    /** @return array<int, array<string, mixed>> */
+    /**
+     * TCP Locations. The linking convention: a Location's `name` IS our
+     * store_number ("03795-00001") — tcp:sync-catalog verifies this and
+     * records the binding in tcp_locations.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function listLocations(): array;
+
+    /**
+     * Job codes, WITH their customFields — the per-store codes carry a
+     * "Restaurant Id" custom field holding the store_number, which is how a
+     * code is attributed to a store (the description alone only encodes it
+     * as "Crew Member - 3795-01").
+     *
+     * @return array<int, array<string, mixed>>
+     */
     public function listJobCodes(): array;
 
     // ---------------------------------------------------------------- time off

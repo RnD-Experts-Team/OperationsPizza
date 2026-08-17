@@ -61,6 +61,19 @@ class TcpClockingTest extends TestCase
             'is_default' => true,
         ]);
 
+        // The TCP job-code catalog, as tcp:sync-catalog would mirror it: the
+        // per-store code's description starts with the position label, and the
+        // store attribution came from the "Restaurant Id" custom field.
+        \App\Models\TcpJobCode::query()->create([
+            'tcp_job_code_id' => 'JOB1',
+            'description' => 'Kitchen - 3759-01',
+            'store_number' => '03759-00001',
+            'clockable' => true,
+            'is_active' => true,
+        ]);
+
+        \App\Models\Position::query()->create(['id' => 9, 'label' => 'Kitchen']);
+
         $this->employee = Employee::query()->create([
             'id' => 501,
             'first_name' => 'Marco',
@@ -68,6 +81,8 @@ class TcpClockingTest extends TestCase
             'active' => true,
             'tcp_employee_id' => '501',
         ]);
+
+        $this->employee->positions()->attach(9, ['is_primary' => true, 'effective_date' => '2026-01-01']);
 
         EmployeeStore::query()->create([
             'employee_id' => 501,
@@ -199,9 +214,12 @@ class TcpClockingTest extends TestCase
         $this->clock()->clockIn($this->store, $this->employee);
     }
 
-    public function test_an_unmapped_store_cannot_resolve_a_job_code(): void
+    public function test_a_store_with_no_matching_job_code_cannot_clock_in(): void
     {
-        HumanityPositionMap::query()->delete();
+        // No catalog row for this store's position → nothing to punch with.
+        // (Job codes resolve from tcp_job_codes, never from the Humanity
+        // position mapping — a Humanity position id is not a TCP job code.)
+        \App\Models\TcpJobCode::query()->delete();
 
         try {
             $this->clock()->clockIn($this->store, $this->employee);

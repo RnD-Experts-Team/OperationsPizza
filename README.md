@@ -9,21 +9,28 @@ the NATS mesh alongside `pizzasys` (auth) and `HiringPizza` (employees).
 
 ```
 pizzasys ──auth.v1.{user,store}.*──┐
-                                   ├──► OperationsPizza ──► TCP Humanity (source of truth for shifts)
-HiringPizza ─hiring.v1.employee.*──┘         │
+                                   ├──► OperationsPizza ──► Humanity (shifts)
+HiringPizza ─hiring.v1.employee.*──┘         │        └───► TCP Manager+ (clocking)
        ▲                                     │
-       └────operations.v1.employee.humanity_sync_requested
+       └────operations.v1.employee.tcp_sync_requested
+
+employees:  HiringPizza ──► TCP Manager+ ──(TCP connector, ~5 min)──► Humanity
 ```
 
 - **pizzasys** is the auth source of truth. Every request's bearer token is
   verified against it by `AuthTokenStoreScopeMiddleware`; nothing authenticates
   locally, which is why `users` has no password column.
-- **HiringPizza** is the employee source of truth *and the only writer of staff
-  into Humanity*. When scheduling meets an employee with no Humanity link, this
-  service asks over NATS and waits — two writers to one external system is how
-  duplicate people get created.
-- **TCP Humanity** is the source of truth for shifts. Every write goes there
+- **HiringPizza** is the employee source of truth and the only writer of staff
+  into **TCP**; TCP's own connector carries them into Humanity. Nobody of ours
+  writes Humanity's employee records. When scheduling meets an employee with no
+  external link, this service asks over NATS and waits — two writers to one
+  external system is how duplicate people get created. Humanity employee ids
+  are then discovered read-only by `humanity:sync-employees`, matching
+  Humanity's `eid`/username prefix against `employees.tcp_employee_id`.
+- **Humanity** is the source of truth for shifts. Every shift write goes there
   first; a local row exists only because that write succeeded.
+- **TCP Manager+** is the source of truth for worked hours (clocking). Neither
+  vendor has a sandbox — see "Safety model" below.
 
 ## Key decisions worth knowing before you change anything
 
@@ -111,17 +118,27 @@ These must exist or the service does nothing useful:
    php artisan hiring:republish-employees
    ```
 4. **A Humanity app** (Settings → API v2) and a **Manager/Supervisor service
-   account**, in both sandbox and production.
+   account**. There is no Humanity sandbox — these are live-account credentials.
 5. **Store ↔ Humanity mappings.** Nothing is matched by name at runtime, so
    until these rows exist every shift write fails with a 422:
    ```bash
-   php artisan humanity:sync-catalog                       # fetch the catalog
-   php artisan humanity:map-location --list                # see both sides
-   php artisan humanity:map-location  --store=03759-00001  # STORE_NOT_MAPPED
-   php artisan humanity:map-position  --store=03759-00001 --default
+   php artisan humanity:sync-catalog                        # fetch the catalog
+   php artisan humanity:map-location --list                 # see both sides
+   php artisan humanity:map-location  --store=<store_number>  # STORE_NOT_MAPPED
+   php artisan humanity:map-position  --store=<store_number> --default
    ```
    Both commands are interactive when run without flags, and refuse ids that
    Humanity doesn't actually have.
+6. **Store ↔ TCP bindings.** TCP Locations are *named by store_number*
+   ("03795-00001") — a convention, and `tcp:sync-catalog` is where it is
+   enforced. It also mirrors TCP's job-code catalog (per-store codes like
+   "Crew Member - 3795-01", attributed by their "Restaurant Id" custom field),
+   which is what clock-ins resolve their `jobCodeId` from:
+   ```bash
+   php artisan tcp:sync-catalog          # bind locations, mirror job codes
+   php artisan tcp:sync-catalog --check  # report only, write nothing
+   ```
+   Exits non-zero while any store lacks a matching TCP location, so gate on it.
 
 ### Running
 
@@ -141,22 +158,35 @@ php artisan schedule:work
 | `humanity:sync-catalog` | Pulls Humanity locations + positions into the mapping tables. `--auto-map` matches stores by name. |
 | `humanity:map-location` | Binds a store to a Humanity location. **Required** — store numbers never match Humanity's location names, so nothing is inferred at runtime. `--list` shows both sides. |
 | `humanity:map-position` | Maps a position to a Humanity position for a store. **A `--default` row is mandatory** or every shift create fails `POSITION_NOT_MAPPED`. |
-| `humanity:reconcile` | Reconciles our shift mirror against Humanity. **Always run `--dry-run` first against production.** |
-| `humanity:sync-leave` | Mirrors Humanity leave into `time_off`. |
+| `humanity:reconcile` | Reconciles our shift mirror against Humanity. **Always `--dry-run` first and read the per-shift diff it prints.** Non-dry-run asks for confirmation (`--force` for cron). |
+| `humanity:sync-leave` | Mirrors Humanity leave into `time_off`. `--dry-run` supported. |
+| `humanity:sync-employees` | READ-ONLY: links local employees to Humanity records by TCP id (`eid` / username prefix). This is how `humanity_employee_id` gets populated. |
+| `tcp:sync-catalog` | Binds stores to TCP locations by name and mirrors the job-code catalog. `--check` for report-only. |
+| `tcp:sync-worksegments` | TCP worked hours → `actual_shifts`. `--dry-run` supported. |
+| `tcp:inspect-employees` | Read-only: TCP roster vs our links, coverage report. |
+| `tcp:quota` | What the 2500/day TCP quota is being spent on. |
 
-## ⚠️ Before enabling writes against production
+## Safety model (both vendors are production-only)
 
-Humanity is **already live** with real managers and employees. The order matters:
+Neither Humanity nor TCP has a sandbox — credentials always mean the live
+account. Four layers stand between a dev box and real data:
 
-1. `HUMANITY_ENV` has no default — the client refuses to start without it.
-2. `HUMANITY_WRITES_ENABLED=false` until **HiringPizza's**
-   `humanity:backfill-employee-ids` has matched the existing roster. Every
-   current employee was created by hand in Humanity with no `eid`, so an
-   unguarded push would create a **duplicate staff record for the entire
-   roster** — and Humanity has no bulk delete.
-3. The reconciler is scheduled only when `HUMANITY_ENV=sandbox`. Its first
-   production pass **imports the live schedule** and can soft-delete local rows,
-   so run it by hand with `--dry-run` first and read the diff.
+1. **`*_DRIVER=fake`** (default): in-memory doubles, no credentials needed.
+   The fakes enforce the same write gates, so tests exercise them.
+2. **`*_WRITES_ENABLED=false`** (default): every mutating call throws.
+3. **`EXTERNAL_WRITE_ALLOWED_STORES`**: the rollout allowlist. While set,
+   shift writes, bulk jobs, clock punches, reconciler imports and worksegment
+   mirroring all skip or refuse stores not on the list. Pilot against the
+   dedicated test store, widen store by store, unset at full rollout.
+4. **The reconciler is triple-gated**: cron runs only when
+   `HUMANITY_RECONCILE_CRON=true` (default false); a manual non-dry-run
+   requires interactive confirmation or `--force`; and `--dry-run` prints the
+   actual per-shift diff (imports, field-level updates, deletes) so the first
+   pass against a store is approved on evidence, not counts.
+
+(The old `HUMANITY_ENV`/`TCP_ENV` labels are gone — with no sandbox to point
+at, "sandbox" only ever mislabeled the live account, and it inverted safety by
+enabling the cron reconciler and skipping the confirm prompt.)
 
 ## Testing
 

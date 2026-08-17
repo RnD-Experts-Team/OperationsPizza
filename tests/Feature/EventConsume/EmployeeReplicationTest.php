@@ -219,7 +219,39 @@ class EmployeeReplicationTest extends TestCase
         $this->assertSame('03759-00001', $employee->stores->first()->store_number);
     }
 
-    public function test_an_arriving_humanity_id_fulfils_an_open_sync_request(): void
+    public function test_an_arriving_tcp_id_fulfils_an_open_sync_request(): void
+    {
+        app(EmployeeCreatedHandler::class)->handle($this->createdEvent());
+
+        EmployeeSyncRequest::query()->create([
+            'employee_id' => 501,
+            'status' => 'requested',
+            'requested_at' => now(),
+            'attempts' => 1,
+        ]);
+
+        app(EmployeeUpdatedHandler::class)->handle([
+            'time' => '2026-08-02T12:00:00+00:00',
+            'data' => [
+                'employee_id' => 501,
+                'changed_fields' => [
+                    'ids' => [
+                        'from' => [],
+                        'to' => [['id_value' => '9004321', 'id_type' => ['label' => 'TCP ID']]],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->assertSame('9004321', Employee::find(501)->tcp_employee_id);
+        // This is the moment the unsynced-employee loop closes: the request
+        // asked for a TCP push, and the TCP id is what came back. The
+        // Humanity id follows later via the connector + humanity:sync-employees.
+        $this->assertSame('fulfilled', EmployeeSyncRequest::sole()->status);
+        $this->assertNotNull(EmployeeSyncRequest::sole()->fulfilled_at);
+    }
+
+    public function test_an_arriving_humanity_id_alone_does_not_fulfil_a_tcp_sync_request(): void
     {
         app(EmployeeCreatedHandler::class)->handle($this->createdEvent());
 
@@ -244,9 +276,7 @@ class EmployeeReplicationTest extends TestCase
         ]);
 
         $this->assertSame('88213', Employee::find(501)->humanity_employee_id);
-        // This is the moment the unsynced-employee loop closes.
-        $this->assertSame('fulfilled', EmployeeSyncRequest::sole()->status);
-        $this->assertNotNull(EmployeeSyncRequest::sole()->fulfilled_at);
+        $this->assertSame('requested', EmployeeSyncRequest::sole()->status);
     }
 
     public function test_an_out_of_order_event_is_ignored(): void

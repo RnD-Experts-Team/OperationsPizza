@@ -3,38 +3,38 @@
 namespace App\Services\Tcp;
 
 use App\Models\Employee;
-use App\Models\HumanityPositionMap;
 use App\Models\Store;
+use App\Models\TcpJobCode;
 use App\Services\Scheduling\Exceptions\SchedulingException;
-use Illuminate\Support\Facades\Cache;
 
 /**
  * Which TCP job code a punch belongs to.
  *
- * TCP owns job codes, and TCP's connector surfaces them in Humanity as
- * positions — so the store↔position mapping already built for scheduling is
- * describing TCP job codes all along, just seen through Humanity. Rather than
- * introduce a second mapping table for operators to keep in step, this resolves
- * through the existing one and falls back to the store default.
+ * TCP's catalog is per-store: "Crew Member - 3795-01" attributed to a store by
+ * its "Restaurant Id" custom field (mirrored into tcp_job_codes by
+ * tcp:sync-catalog). Our position labels are store-agnostic ("Crew Member"),
+ * so the match is: same store, description starts with the position label,
+ * case-insensitive.
+ *
+ * This deliberately does NOT go through the Humanity position mapping — a
+ * Humanity position id is Humanity's own key and shares nothing with TCP's
+ * jobCodeId, so resolving through it sent garbage codes with every punch.
  *
  * A clockIn without a valid job code is rejected by TCP, so an unmapped store
  * fails here with a clear error instead of an opaque 400.
  */
 class TcpJobCodeResolver
 {
-    private const CACHE_KEY = 'tcp:jobcodes';
-    private const CACHE_TTL = 3600;
-
-    public function __construct(private readonly TcpClientInterface $tcp)
-    {
-    }
-
     public function resolve(Store $store, ?Employee $employee = null, ?int $positionId = null): string
     {
-        $candidates = [];
+        $labels = [];
 
         if ($positionId !== null) {
-            $candidates[] = $positionId;
+            $label = \App\Models\Position::query()->whereKey($positionId)->value('label');
+
+            if (filled($label)) {
+                $labels[] = (string) $label;
+            }
         }
 
         if ($employee !== null) {
@@ -42,72 +42,54 @@ class TcpJobCodeResolver
                 ? $employee->positions
                 : $employee->positions()->get();
 
-            foreach ($positions->sortByDesc(fn ($p) => (int) $p->pivot->is_primary) as $position) {
-                $candidates[] = (int) $position->id;
+            foreach ($positions->sortByDesc(fn ($p) => (int) ($p->pivot->is_primary ?? 0)) as $position) {
+                if (filled($position->label)) {
+                    $labels[] = (string) $position->label;
+                }
             }
         }
 
-        foreach ($candidates as $candidate) {
-            $mapped = HumanityPositionMap::query()
-                ->where('store_id', $store->id)
-                ->where('position_id', $candidate)
-                ->value('humanity_position_id');
+        $storeCodes = TcpJobCode::query()
+            ->where('store_number', (string) $store->store_number)
+            ->where('clockable', true)
+            ->where('is_active', true)
+            ->get();
 
-            if (filled($mapped) && $this->jobCodeExists((string) $mapped)) {
-                return (string) $mapped;
+        foreach (array_unique($labels) as $label) {
+            $match = $storeCodes->first(
+                fn (TcpJobCode $code) => stripos($code->description, $label) === 0
+            );
+
+            if ($match !== null) {
+                return (string) $match->tcp_job_code_id;
             }
         }
 
-        $default = HumanityPositionMap::query()
-            ->where('store_id', $store->id)
-            ->whereNull('position_id')
-            ->value('humanity_position_id');
+        // Optional account-wide fallback (e.g. 1000 "Regular"). Validated
+        // against the synced catalog so a typo cannot send an unknown code.
+        $fallback = (string) (config('tcp.default_job_code') ?? '');
 
-        if (filled($default) && $this->jobCodeExists((string) $default)) {
-            return (string) $default;
+        if ($fallback !== ''
+            && TcpJobCode::query()->where('tcp_job_code_id', $fallback)->where('is_active', true)->exists()
+        ) {
+            return $fallback;
         }
+
+        $catalogEmpty = TcpJobCode::query()->count() === 0;
 
         throw new SchedulingException(
-            "No TCP job code is mapped for store {$store->store_number}.",
+            "No TCP job code matches store {$store->store_number}"
+                . ($labels === [] ? ' (employee has no position)' : ' for position(s): ' . implode(', ', array_unique($labels)))
+                . '.',
             'JOB_CODE_NOT_MAPPED',
             422,
             [
                 'store_number' => (string) $store->store_number,
-                'resolution' => 'Map one with: php artisan humanity:map-position --store=' . $store->store_number . ' --default',
+                'position_labels' => array_values(array_unique($labels)),
+                'resolution' => $catalogEmpty
+                    ? 'The TCP catalog has never been synced: php artisan tcp:sync-catalog'
+                    : 'Check tcp:sync-catalog output — the store needs a clockable code whose description starts with the position label.',
             ]
         );
-    }
-
-    /**
-     * Guards against a mapping that points at a Humanity position with no TCP
-     * job code behind it — possible if a position was created directly in
-     * Humanity instead of TCP, which the connector does not support.
-     *
-     * Cached: this runs on every punch, and the daily quota is 2500.
-     */
-    private function jobCodeExists(string $jobCodeId): bool
-    {
-        $ids = Cache::remember(self::CACHE_KEY, self::CACHE_TTL, function () {
-            $ids = [];
-
-            foreach ($this->tcp->listJobCodes() as $jobCode) {
-                $id = $jobCode['jobCodeId'] ?? $jobCode['id'] ?? null;
-
-                if ($id !== null && !is_array($id)) {
-                    $ids[] = (string) $id;
-                }
-            }
-
-            return $ids;
-        });
-
-        // An empty catalog means we could not read it, not that nothing exists;
-        // failing open here beats blocking every clock-in on a cache miss.
-        return $ids === [] || in_array($jobCodeId, $ids, true);
-    }
-
-    public function forgetCache(): void
-    {
-        Cache::forget(self::CACHE_KEY);
     }
 }

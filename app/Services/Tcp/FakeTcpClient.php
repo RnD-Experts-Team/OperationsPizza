@@ -29,6 +29,9 @@ class FakeTcpClient implements TcpClientInterface
     public array $jobCodes = [];
 
     /** @var array<int, array<string, mixed>> */
+    public array $locations = [];
+
+    /** @var array<int, array<string, mixed>> */
     public array $timeOffRequests = [];
 
     /** @var array<int, array{op:string, args:array}> */
@@ -62,9 +65,33 @@ class FakeTcpClient implements TcpClientInterface
         ], $attributes);
     }
 
-    public function seedJobCode(string $id, string $name): void
+    /**
+     * Real per-store job codes look like description "Crew Member - 3795-01"
+     * plus a "Restaurant Id" custom field carrying the store_number — pass
+     * $storeNumber to reproduce that shape.
+     */
+    public function seedJobCode(string $id, string $description, ?string $storeNumber = null, bool $clockable = true): void
     {
-        $this->jobCodes[] = ['jobCodeId' => $id, 'name' => $name];
+        $customFields = [];
+
+        if ($storeNumber !== null) {
+            $customFields[] = ['description' => 'Restaurant Id', 'value' => $storeNumber];
+        }
+
+        $this->jobCodes[] = [
+            'id' => $id,
+            'jobCodeId' => (int) $id,
+            'description' => $description,
+            'clockable' => $clockable,
+            'active' => true,
+            'customFields' => $customFields,
+        ];
+    }
+
+    /** TCP Locations are named by store_number — that name IS the link. */
+    public function seedLocation(string $id, string $name): void
+    {
+        $this->locations[] = ['id' => $id, 'name' => $name, 'active' => true];
     }
 
     public function seedSegment(TcpWorkSegment $segment): void
@@ -303,6 +330,13 @@ class FakeTcpClient implements TcpClientInterface
         $this->calls[] = ['op' => 'updateEmployee', 'args' => ['employeeId' => $employeeId]];
 
         return $this->employees[$employeeId] = array_merge($this->employees[$employeeId], $payload);
+    }
+
+    public function listLocations(): array
+    {
+        $this->guard('listLocations');
+
+        return $this->locations;
     }
 
     public function listJobCodes(): array

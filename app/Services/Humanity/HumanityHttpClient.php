@@ -12,17 +12,16 @@ use Illuminate\Support\Facades\Log;
 
 class HumanityHttpClient implements HumanityClientInterface
 {
+    // There is no HUMANITY_ENV guard here anymore, deliberately: Humanity has
+    // no sandbox, so an "environment" label could only ever describe the ONE
+    // live account — and the old label actively inverted safety (sandbox
+    // enabled the cron reconciler and skipped the confirm prompt). What
+    // protects production now: driver=fake by default, writes_enabled=false
+    // by default, and the EXTERNAL_WRITE_ALLOWED_STORES rollout allowlist.
     public function __construct(
         private readonly HumanityTokenManager $tokens,
         private readonly HumanityDateFormatter $dates,
     ) {
-        // No default for humanity.environment on purpose: pointing a dev box at
-        // the live account by forgetting a variable is not a recoverable mistake.
-        if (blank(config('humanity.environment'))) {
-            throw new HumanityException(
-                'HUMANITY_ENV is not set. Refusing to talk to Humanity without an explicit environment.'
-            );
-        }
     }
 
     // ---------------------------------------------------------------- catalog

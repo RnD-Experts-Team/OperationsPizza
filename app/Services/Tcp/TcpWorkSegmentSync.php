@@ -42,7 +42,7 @@ class TcpWorkSegmentSync
     /**
      * @return array{imported:int, updated:int, skipped:int, unlinked:int, segments:int}
      */
-    public function sync(Store $store, ?CarbonImmutable $from = null, ?CarbonImmutable $to = null, bool $full = false): array
+    public function sync(Store $store, ?CarbonImmutable $from = null, ?CarbonImmutable $to = null, bool $full = false, bool $dryRun = false): array
     {
         $timezone = $this->timezones->for($store);
         $lookback = (int) config('tcp.timeclock.lookback_days', 14);
@@ -143,13 +143,16 @@ class TcpWorkSegmentSync
                 continue;
             }
 
-            $outcome = $this->upsert($store, $employee, $segment, $timezone);
+            $outcome = $this->upsert($store, $employee, $segment, $timezone, $dryRun);
             $stats[$outcome]++;
         }
 
         // Only advance the cursor after a clean pass, and back-date it by the
-        // overlap so an edit landing mid-run is not missed forever.
-        $this->rememberCursor($store, $startedAt);
+        // overlap so an edit landing mid-run is not missed forever. A dry run
+        // must not move it — the next real pass still needs these segments.
+        if (!$dryRun) {
+            $this->rememberCursor($store, $startedAt);
+        }
 
         Log::info('TCP work segment sync finished', ['store_number' => $store->store_number] + $stats);
 
@@ -157,7 +160,7 @@ class TcpWorkSegmentSync
     }
 
     /** @return 'imported'|'updated'|'skipped' */
-    private function upsert(Store $store, Employee $employee, TcpWorkSegment $segment, string $timezone): string
+    private function upsert(Store $store, Employee $employee, TcpWorkSegment $segment, string $timezone, bool $dryRun = false): string
     {
         // An open segment is someone still on the clock. Recording it as an
         // actual shift would show a shift that ends now and keeps moving.
@@ -212,6 +215,10 @@ class TcpWorkSegmentSync
                 ? null
                 : CarbonImmutable::parse($segment->actualTimeOut, $timezone)->utc()->toDateTimeString(),
         ];
+
+        if ($dryRun) {
+            return $existing !== null ? 'updated' : 'imported';
+        }
 
         return DB::transaction(function () use ($existing, $attributes) {
             if ($existing !== null) {

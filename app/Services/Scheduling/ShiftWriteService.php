@@ -40,6 +40,7 @@ use Illuminate\Support\Str;
 class ShiftWriteService
 {
     public function __construct(
+        private readonly \App\Services\External\ExternalWriteGuard $writeGuard,
         private readonly HumanityClientInterface $humanity,
         private readonly HumanityPositionResolver $positions,
         private readonly HumanitySyncLogger $syncLog,
@@ -61,6 +62,8 @@ class ShiftWriteService
      */
     public function create(Store $store, array $data, ?Request $request = null): Shift
     {
+        $this->writeGuard->assertAllowed((string) $store->store_number);
+
         $settings = $store->settings();
         $timezone = $this->timezones->for($store);
 
@@ -155,6 +158,8 @@ class ShiftWriteService
      */
     public function update(Store $store, Shift $shift, array $data, ?Request $request = null): Shift
     {
+        $this->writeGuard->assertAllowed((string) $store->store_number);
+
         $settings = $store->settings();
         $timezone = $this->timezones->for($store);
 
@@ -263,6 +268,8 @@ class ShiftWriteService
 
     public function delete(Store $store, Shift $shift, ?Request $request = null): void
     {
+        $this->writeGuard->assertAllowed((string) $store->store_number);
+
         $log = $this->syncLog->begin(
             entityType: 'shift',
             operation: 'delete',

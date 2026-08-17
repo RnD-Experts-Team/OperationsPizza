@@ -217,6 +217,16 @@ trait ReplicatesEmployees
             'tcp_employee_id' => $tcpId,
             'tcp_synced_at' => $tcpId === null ? null : now(),
         ])->save();
+
+        // The link just arrived — this is what closes the loop opened by
+        // operations.v1.employee.tcp_sync_requested. The Humanity id follows
+        // later via TCP's connector + humanity:sync-employees.
+        if ($tcpId !== null) {
+            EmployeeSyncRequest::query()
+                ->where('employee_id', $employee->id)
+                ->where('status', '!=', 'fulfilled')
+                ->update(['status' => 'fulfilled', 'fulfilled_at' => now(), 'last_error' => null]);
+        }
     }
 
     protected function liftHumanityId(Employee $employee): void
@@ -236,15 +246,6 @@ trait ReplicatesEmployees
             'humanity_employee_id' => $humanityId,
             'humanity_synced_at' => $humanityId === null ? null : now(),
         ])->save();
-
-        // The link just arrived — this is what closes the loop opened by
-        // operations.v1.employee.humanity_sync_requested.
-        if ($humanityId !== null) {
-            EmployeeSyncRequest::query()
-                ->where('employee_id', $employee->id)
-                ->where('status', '!=', 'fulfilled')
-                ->update(['status' => 'fulfilled', 'fulfilled_at' => now(), 'last_error' => null]);
-        }
     }
 
     protected function replaceStatusHistories(int $employeeId, array $histories): void

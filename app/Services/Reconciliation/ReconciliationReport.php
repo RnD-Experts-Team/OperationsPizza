@@ -12,6 +12,14 @@ class ReconciliationReport
     public int $skipped = 0;
     public array $errors = [];
 
+    /**
+     * Per-shift change detail — what a dry run exists to show. Each entry:
+     * {action: imported|updated|deleted, humanity_shift_id, shift_id?,
+     *  date?, diff?}. The diff is the same field-level local-vs-remote map
+     * recorded to humanity_sync_log on a real run.
+     */
+    public array $changes = [];
+
     public function toArray(): array
     {
         return [

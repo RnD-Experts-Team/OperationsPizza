@@ -132,6 +132,15 @@ class HumanityShiftReconciler
 
         $report->imported++;
 
+        $report->changes[] = [
+            'action' => 'imported',
+            'humanity_shift_id' => $remote->shiftId,
+            'date' => $remote->startDate,
+            'start' => $remote->startTime,
+            'end' => $remote->endTime,
+            'employees' => $remote->employeeIds,
+        ];
+
         if ($dryRun) {
             return;
         }
@@ -200,6 +209,14 @@ class HumanityShiftReconciler
 
         $report->updated++;
 
+        $report->changes[] = [
+            'action' => 'updated',
+            'shift_id' => (int) $localShift->id,
+            'humanity_shift_id' => $remote->shiftId,
+            'date' => (string) $localShift->shift_date,
+            'diff' => $diff,
+        ];
+
         if ($dryRun) {
             return;
         }
@@ -250,6 +267,13 @@ class HumanityShiftReconciler
         }
 
         $report->deleted++;
+
+        $report->changes[] = [
+            'action' => 'deleted',
+            'shift_id' => (int) $localShift->id,
+            'humanity_shift_id' => $localShift->humanity_shift_id,
+            'date' => (string) $localShift->shift_date,
+        ];
 
         if ($dryRun) {
             return;

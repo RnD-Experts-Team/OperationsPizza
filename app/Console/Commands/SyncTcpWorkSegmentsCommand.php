@@ -24,7 +24,8 @@ class SyncTcpWorkSegmentsCommand extends Command
         {--store= : store_number; omit for every store}
         {--from= : YYYY-MM-DD}
         {--to= : YYYY-MM-DD}
-        {--full : Ignore the delta cursor and re-read the window. Expensive.}';
+        {--full : Ignore the delta cursor and re-read the window. Expensive.}
+        {--dry-run : Count what would be written without touching actual_shifts or the cursor}';
 
     protected $description = 'Sync worked segments from TCP Manager+ into actual_shifts';
 
@@ -58,9 +59,21 @@ class SyncTcpWorkSegmentsCommand extends Command
         $rows = [];
         $exit = self::SUCCESS;
 
+        $guard = app(\App\Services\External\ExternalWriteGuard::class);
+        $dryRun = (bool) $this->option('dry-run');
+
         foreach ($stores as $store) {
+            // Rollout allowlist: local mirroring is scoped with everything
+            // else while a pilot runs, so an unpiloted store's actual_shifts
+            // stay untouched. Dry runs are read-only and stay unrestricted.
+            if (!$dryRun && $guard->isRestricted() && !$guard->allows((string) $store->store_number)) {
+                $this->line("Skipping {$store->store_number} — not in EXTERNAL_WRITE_ALLOWED_STORES.");
+
+                continue;
+            }
+
             try {
-                $stats = $sync->sync($store, $from, $to, (bool) $this->option('full'));
+                $stats = $sync->sync($store, $from, $to, (bool) $this->option('full'), $dryRun);
 
                 $rows[] = [
                     $store->store_number,
@@ -90,6 +103,10 @@ class SyncTcpWorkSegmentsCommand extends Command
         if ($unlinked > 0) {
             $this->warn("{$unlinked} segment(s) belong to employees with no TCP link — their hours are not recorded.");
             $this->line('  php artisan tcp:inspect-employees');
+        }
+
+        if ($dryRun) {
+            $this->comment('Dry run — nothing was written and the delta cursor did not move.');
         }
 
         return $exit;

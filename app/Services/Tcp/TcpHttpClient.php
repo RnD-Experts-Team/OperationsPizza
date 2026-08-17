@@ -15,17 +15,13 @@ use Illuminate\Support\Facades\Log;
 
 class TcpHttpClient implements TcpClientInterface
 {
+    // No TCP_ENV guard, same reasoning as HumanityHttpClient: TCP has no
+    // sandbox, so the label could only describe the one live account. Safety
+    // is driver=fake + writes_enabled=false defaults + the store allowlist.
     public function __construct(
         private readonly TcpTokenManager $tokens,
         private readonly TcpRateLimiter $limiter,
     ) {
-        // Same guard as the Humanity client: no default environment, because
-        // pointing a dev box at live clocking data is not recoverable.
-        if (blank(config('tcp.environment'))) {
-            throw new TcpException(
-                'TCP_ENV is not set. Refusing to talk to TimeClock Plus without an explicit environment.'
-            );
-        }
     }
 
     public function ping(): bool
@@ -233,14 +229,39 @@ class TcpHttpClient implements TcpClientInterface
         return is_array($first) ? $first : ['employeeId' => $employeeId];
     }
 
-    // --------------------------------------------------------------- job codes
+    // --------------------------------------------------------------- catalog
+
+    public function listLocations(): array
+    {
+        return $this->paginate('locations', [], 'list locations');
+    }
 
     public function listJobCodes(): array
     {
-        return array_values(array_filter(
-            $this->request('get', 'jobcodes', ['perPage' => 1000], 'list job codes'),
-            'is_array'
-        ));
+        // Paged: the account has hundreds of per-store codes, and TCP has been
+        // observed serving 50-row pages regardless of the requested perPage —
+        // a single unpaged call silently truncates the catalog.
+        return $this->paginate('jobcodes', [], 'list job codes');
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    private function paginate(string $path, array $filters, string $context): array
+    {
+        $perPage = 50;
+        $page = 1;
+        $all = [];
+
+        do {
+            $rows = $this->request('get', $path, $filters + [
+                'perPage' => $perPage,
+                'page' => $page,
+            ], $context);
+
+            $all = array_merge($all, array_values(array_filter($rows, 'is_array')));
+            $page++;
+        } while (count($rows) === $perPage && $page <= 200);
+
+        return $all;
     }
 
     // ---------------------------------------------------------------- time off

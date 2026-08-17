@@ -10,13 +10,30 @@ Schedule::command('outbox:publish-pending')->everyFiveMinutes()->withoutOverlapp
 // window is the ONLY way to notice an edit made in Humanity's own UI. This is
 // the primary sync mechanism, not a backstop.
 //
-// Deliberately NOT scheduled against production until Phase 1 is signed off:
-// the first live pass imports the existing schedule and can soft-delete local
-// rows, which must be a deliberate act (see ReconcileHumanityShiftsCommand).
-Schedule::command('humanity:reconcile')
+// Gated by an explicit opt-in flag, OFF by default: the first pass against a
+// store imports its live schedule and can soft-delete local rows, so the cron
+// is enabled only after manual `--dry-run` diffs have been read clean (see
+// the rollout runbook). --force skips the interactive confirm; the store
+// allowlist still scopes which stores a pass may touch.
+Schedule::command('humanity:reconcile --force')
     ->hourly()
     ->withoutOverlapping()
-    ->skip(fn () => config('humanity.environment') !== 'sandbox');
+    ->skip(fn () => !config('humanity.reconcile.cron_enabled'));
+
+// Read-only: links local employees to Humanity records by TCP id (eid /
+// username prefix). This is how humanity_employee_id appears now that nothing
+// of ours writes Humanity's employee records — TCP's connector owns them.
+Schedule::command('humanity:sync-employees')
+    ->dailyAt('03:30')
+    ->withoutOverlapping()
+    ->skip(fn () => config('humanity.driver') !== 'http');
+
+// TCP locations + job codes (~6 quota calls). Keeps the store bindings and
+// the clockable-code catalog fresh; new stores surface as unmatched rows.
+Schedule::command('tcp:sync-catalog')
+    ->dailyAt('03:15')
+    ->withoutOverlapping()
+    ->skip(fn () => config('tcp.driver') !== 'http');
 
 // Approved leave is a scheduling guard, so it needs to be fresher than daily.
 Schedule::command('humanity:sync-leave')

@@ -30,6 +30,7 @@ use Illuminate\Support\Str;
 class TcpClockService
 {
     public function __construct(
+        private readonly \App\Services\External\ExternalWriteGuard $writeGuard,
         private readonly TcpClientInterface $tcp,
         private readonly TcpJobCodeResolver $jobCodes,
         private readonly StoreTimezoneResolver $timezones,
@@ -39,6 +40,8 @@ class TcpClockService
 
     public function clockIn(Store $store, Employee $employee, ?CarbonImmutable $at = null, ?int $positionId = null, ?Request $request = null): TcpWorkSegment
     {
+        $this->writeGuard->assertAllowed((string) $store->store_number);
+
         $tcpEmployeeId = $this->requireTcpLink($employee);
         $at = $this->resolveMoment($store, $at);
 
@@ -66,6 +69,8 @@ class TcpClockService
 
     public function clockOut(Store $store, Employee $employee, ?CarbonImmutable $at = null, ?Request $request = null): TcpWorkSegment
     {
+        $this->writeGuard->assertAllowed((string) $store->store_number);
+
         $tcpEmployeeId = $this->requireTcpLink($employee);
         $at = $this->resolveMoment($store, $at);
 
@@ -90,6 +95,8 @@ class TcpClockService
     /** A break starts by CLOSING the worked segment — TCP models it as a timeOut. */
     public function breakStart(Store $store, Employee $employee, int $breakType = 0, ?CarbonImmutable $at = null, ?Request $request = null): TcpWorkSegment
     {
+        $this->writeGuard->assertAllowed((string) $store->store_number);
+
         $tcpEmployeeId = $this->requireTcpLink($employee);
 
         return $this->send(
@@ -104,6 +111,8 @@ class TcpClockService
     /** Returning from break OPENS a new segment, so it needs a job code again. */
     public function breakEnd(Store $store, Employee $employee, ?CarbonImmutable $at = null, ?int $positionId = null, ?Request $request = null): TcpWorkSegment
     {
+        $this->writeGuard->assertAllowed((string) $store->store_number);
+
         $tcpEmployeeId = $this->requireTcpLink($employee);
         $jobCodeId = $this->jobCodes->resolve($store, $employee, $positionId);
 

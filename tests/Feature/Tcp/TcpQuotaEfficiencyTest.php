@@ -69,7 +69,17 @@ class TcpQuotaEfficiencyTest extends TestCase
         }
 
         $this->tcp = app(FakeTcpClient::class);
-        $this->tcp->seedJobCode('JOB1', 'Kitchen');
+
+        // These employees have no positions, so job codes resolve through the
+        // account-wide fallback — which must exist in the synced catalog.
+        \App\Models\TcpJobCode::query()->create([
+            'tcp_job_code_id' => 'JOB1',
+            'description' => 'Regular',
+            'store_number' => null,
+            'clockable' => true,
+            'is_active' => true,
+        ]);
+        config(['tcp.default_job_code' => 'JOB1']);
     }
 
     private function store(): Store
