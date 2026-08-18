@@ -35,7 +35,11 @@ class EmployeeSyncController extends Controller
         $store = $this->resolveStore($storeId);
         $employee = $this->findEmployee($employeeId);
 
-        if ($employee->isLinkedToHumanity()) {
+        // This action's only effect is asking HiringPizza to push to TCP —
+        // checking Humanity linkage here would keep re-firing that push after
+        // it already succeeded, while the employee waits on TCP's connector
+        // (and humanity:sync-employees) to actually reach humanity_employee_id.
+        if ($employee->isLinkedToTcp()) {
             return response()->json(['data' => $this->syncRequests->statusFor($employee)]);
         }
 

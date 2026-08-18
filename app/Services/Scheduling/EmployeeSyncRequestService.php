@@ -83,8 +83,15 @@ class EmployeeSyncRequestService
         return [
             'employee_id' => (string) $employee->id,
             'employee_name' => trim("{$employee->first_name} {$employee->last_name}"),
+            // 'synced' keeps meaning "can be scheduled" (needs the Humanity
+            // link — see ShiftWriteService::requireHumanityLink). tcp_employee_id
+            // / synced_to_tcp show the earlier step this request loop actually
+            // performs: TCP linkage happens first, Humanity linkage follows via
+            // TCP's connector + a later humanity:sync-employees run.
             'humanity_employee_id' => $employee->humanity_employee_id,
             'synced' => $employee->isLinkedToHumanity(),
+            'tcp_employee_id' => $employee->tcp_employee_id,
+            'synced_to_tcp' => $employee->isLinkedToTcp(),
             'sync_request' => $syncRequest === null ? null : [
                 'status' => $syncRequest->status,
                 'requested_at' => $syncRequest->requested_at?->toIso8601String(),
