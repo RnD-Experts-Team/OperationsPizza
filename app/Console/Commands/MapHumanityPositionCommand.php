@@ -8,6 +8,7 @@ use App\Models\HumanityPositionMap;
 use App\Models\Position;
 use App\Models\Store;
 use Illuminate\Console\Command;
+use Illuminate\Support\Collection;
 
 /**
  * Maps one of our positions to a Humanity position, per store.
@@ -24,17 +25,23 @@ use Illuminate\Console\Command;
 class MapHumanityPositionCommand extends Command
 {
     protected $signature = 'humanity:map-position
-        {--store= : store_number, e.g. 03759-00001}
+        {--store= : store_number, e.g. 03759-00001; omit with --auto-map to cover every store}
         {--humanity-position= : Humanity position id}
         {--position= : our positions.id; omit together with --default}
         {--default : Map the store default (position_id NULL) used when an employee has no mapped position}
         {--list : Show this store\'s position mappings}
-        {--unmap : Remove the mapping identified by --position/--default}';
+        {--unmap : Remove the mapping identified by --position/--default}
+        {--auto-map : Bulk-map every local position to a Humanity position per store, by store-suffixed label prefix}
+        {--force : With --auto-map, overwrite an existing mapping that disagrees with the auto-computed match}';
 
     protected $description = 'Map a position to its Humanity position for a store';
 
     public function handle(): int
     {
+        if ($this->option('auto-map')) {
+            return $this->autoMap();
+        }
+
         $store = $this->resolveStore();
         if ($store === null) {
             return self::FAILURE;
@@ -77,6 +84,157 @@ class MapHumanityPositionCommand extends Command
             . ($humanityName ? " ({$humanityName})" : ''));
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Bulk-maps every local position to a Humanity position, per store, by the
+     * same store-suffixed label-prefix convention TcpJobCodeResolver uses for
+     * TCP job codes ("Crew Member" -> "Crew Member - 3795-01").
+     *
+     * The real catalog carries BOTH a bare label ("Crew Member") and per-store
+     * suffixed ones for the same role, so matching against the full candidate
+     * set (store-scoped + global, which activeHumanityPositions() deliberately
+     * unions) would make every match ambiguous. The store-scoped tier is tried
+     * first; the global tier is only a fallback when nothing store-scoped
+     * matches.
+     *
+     * Never touches the position_id=NULL default row (that stays a deliberate,
+     * manual --default action), and never overwrites a mapping that already
+     * disagrees with the computed match unless --force is passed — this must
+     * be safe to re-run without undoing hand-made corrections.
+     */
+    private function autoMap(): int
+    {
+        if ($this->option('position') !== null
+            || $this->option('humanity-position') !== null
+            || $this->option('default')
+            || $this->option('list')
+            || $this->option('unmap')
+        ) {
+            $this->error('--auto-map cannot be combined with --position, --humanity-position, --default, --list, or --unmap.');
+
+            return self::FAILURE;
+        }
+
+        $storeNumber = $this->option('store');
+
+        $stores = $storeNumber !== null
+            ? Store::query()->where('store_number', $storeNumber)->get()
+            : Store::query()->orderBy('store_number')->get();
+
+        if ($stores->isEmpty()) {
+            $this->error($storeNumber !== null ? "Store {$storeNumber} not found." : 'No stores exist yet.');
+
+            return self::FAILURE;
+        }
+
+        $positions = Position::query()->orderBy('label')->get();
+        $force = (bool) $this->option('force');
+
+        $matched = 0;
+        $unmapped = 0;
+        $ambiguous = [];
+        $conflicts = 0;
+        $skippedStores = 0;
+
+        foreach ($stores as $store) {
+            $candidates = $this->activeHumanityPositions($store);
+
+            if ($candidates === null) {
+                $this->warn("  {$store->store_number}: no Humanity location mapped — skipped.");
+                $skippedStores++;
+
+                continue;
+            }
+
+            if ($candidates->isEmpty()) {
+                $this->warn("  {$store->store_number}: no active Humanity positions for this location — skipped.");
+                $skippedStores++;
+
+                continue;
+            }
+
+            $humanityLocationId = HumanityLocation::query()
+                ->where('store_id', $store->id)
+                ->value('humanity_location_id');
+
+            foreach ($positions as $position) {
+                $label = (string) $position->label;
+
+                $storeScoped = $candidates->filter(
+                    fn (HumanityPosition $p) => $p->humanity_location_id === $humanityLocationId
+                        && stripos($p->name, $label) === 0
+                );
+
+                $matches = $storeScoped->isNotEmpty() ? $storeScoped : $candidates->filter(
+                    fn (HumanityPosition $p) => $p->humanity_location_id === null
+                        && stripos($p->name, $label) === 0
+                );
+
+                if ($matches->isEmpty()) {
+                    $unmapped++;
+
+                    continue;
+                }
+
+                if ($matches->count() > 1) {
+                    $ambiguous[] = sprintf(
+                        '%s / %s: %s',
+                        $store->store_number,
+                        $label,
+                        $matches->map(fn (HumanityPosition $p) => "{$p->humanity_position_id} ({$p->name})")->implode(', ')
+                    );
+
+                    continue;
+                }
+
+                $match = $matches->first();
+
+                $existing = HumanityPositionMap::query()
+                    ->where('store_id', $store->id)
+                    ->where('position_id', $position->id)
+                    ->first();
+
+                if ($existing !== null && $existing->humanity_position_id !== $match->humanity_position_id && !$force) {
+                    $this->warn(sprintf(
+                        '  %s / %s: already mapped to %s (auto-match is %s) — left unchanged, pass --force to overwrite.',
+                        $store->store_number,
+                        $label,
+                        $existing->humanity_position_id,
+                        $match->humanity_position_id
+                    ));
+                    $conflicts++;
+
+                    continue;
+                }
+
+                HumanityPositionMap::query()->updateOrCreate(
+                    ['store_id' => $store->id, 'position_id' => $position->id],
+                    ['humanity_position_id' => $match->humanity_position_id, 'is_default' => false]
+                );
+
+                $matched++;
+            }
+        }
+
+        $this->table(['metric', 'count'], [
+            ['positions matched', $matched],
+            ['positions unmapped (no match)', $unmapped],
+            ['positions ambiguous', count($ambiguous)],
+            ['existing mappings left unchanged (conflict)', $conflicts],
+            ['stores skipped (no location / no positions)', $skippedStores],
+        ]);
+
+        if ($ambiguous !== []) {
+            $this->newLine();
+            $this->error('Ambiguous — resolve by hand with --position/--humanity-position:');
+
+            foreach ($ambiguous as $line) {
+                $this->line("  {$line}");
+            }
+        }
+
+        return $ambiguous === [] ? self::SUCCESS : self::FAILURE;
     }
 
     private function list(Store $store): int
@@ -213,25 +371,14 @@ class MapHumanityPositionCommand extends Command
 
     private function resolveHumanityPositionId(Store $store): ?string
     {
-        $humanityLocationId = HumanityLocation::query()
-            ->where('store_id', $store->id)
-            ->value('humanity_location_id');
+        $candidates = $this->activeHumanityPositions($store);
 
-        if ($humanityLocationId === null) {
+        if ($candidates === null) {
             $this->error("Store {$store->store_number} is not mapped to a Humanity location yet.");
             $this->line("  php artisan humanity:map-location --store={$store->store_number}");
 
             return null;
         }
-
-        // Only positions belonging to THIS store's location — a shift written
-        // against another location's position would land in the wrong
-        // restaurant. Positions with no location are global, so allow those.
-        $candidates = HumanityPosition::query()
-            ->where('is_active', true)
-            ->where(fn ($q) => $q->where('humanity_location_id', $humanityLocationId)->orWhereNull('humanity_location_id'))
-            ->orderBy('name')
-            ->get();
 
         if ($candidates->isEmpty()) {
             $this->error('No Humanity positions found for this location.');
@@ -256,5 +403,33 @@ class MapHumanityPositionCommand extends Command
         $labels = $candidates->map(fn (HumanityPosition $p) => "{$p->humanity_position_id}  {$p->name}")->all();
 
         return strtok($this->choice('Which Humanity position?', $labels), ' ');
+    }
+
+    /**
+     * Active Humanity positions available to a store: ones scoped to its own
+     * location, plus location-less (global) ones. Null means the store has no
+     * Humanity location mapped at all — distinct from an empty result, which
+     * means the location exists but the catalog has no active positions for it.
+     *
+     * @return Collection<int, HumanityPosition>|null
+     */
+    private function activeHumanityPositions(Store $store): ?Collection
+    {
+        $humanityLocationId = HumanityLocation::query()
+            ->where('store_id', $store->id)
+            ->value('humanity_location_id');
+
+        if ($humanityLocationId === null) {
+            return null;
+        }
+
+        // Only positions belonging to THIS store's location — a shift written
+        // against another location's position would land in the wrong
+        // restaurant. Positions with no location are global, so allow those.
+        return HumanityPosition::query()
+            ->where('is_active', true)
+            ->where(fn ($q) => $q->where('humanity_location_id', $humanityLocationId)->orWhereNull('humanity_location_id'))
+            ->orderBy('name')
+            ->get();
     }
 }

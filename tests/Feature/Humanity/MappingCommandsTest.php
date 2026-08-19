@@ -212,4 +212,177 @@ class MappingCommandsTest extends TestCase
 
         $this->assertSame(0, HumanityPositionMap::count());
     }
+
+    public function test_auto_map_prefers_the_store_scoped_position_over_the_global_one(): void
+    {
+        $this->artisan('humanity:map-location', ['--store' => '03759-00001', '--location' => 'LOC-77']);
+
+        Position::query()->create(['id' => 10, 'label' => 'Crew Member']);
+
+        // The real account has both a bare label and a store-suffixed one for
+        // the same role — the store-scoped one must win, not read as ambiguous.
+        HumanityPosition::query()->create([
+            'humanity_position_id' => 'POS-GLOBAL', 'humanity_location_id' => null,
+            'name' => 'Crew Member', 'is_active' => true,
+        ]);
+        HumanityPosition::query()->create([
+            'humanity_position_id' => 'POS-STORE', 'humanity_location_id' => 'LOC-77',
+            'name' => 'Crew Member - Downtown', 'is_active' => true,
+        ]);
+
+        $this->artisan('humanity:map-position', ['--auto-map' => true, '--store' => '03759-00001'])
+            ->assertExitCode(0);
+
+        $row = HumanityPositionMap::query()->where('position_id', 10)->sole();
+        $this->assertSame('POS-STORE', $row->humanity_position_id);
+        $this->assertFalse((bool) $row->is_default);
+    }
+
+    public function test_auto_map_reports_two_store_scoped_matches_as_ambiguous(): void
+    {
+        $this->artisan('humanity:map-location', ['--store' => '03759-00001', '--location' => 'LOC-77']);
+
+        Position::query()->create(['id' => 10, 'label' => 'Crew Member']);
+
+        HumanityPosition::query()->create([
+            'humanity_position_id' => 'POS-A', 'humanity_location_id' => 'LOC-77',
+            'name' => 'Crew Member - A', 'is_active' => true,
+        ]);
+        HumanityPosition::query()->create([
+            'humanity_position_id' => 'POS-B', 'humanity_location_id' => 'LOC-77',
+            'name' => 'Crew Member - B', 'is_active' => true,
+        ]);
+
+        $this->artisan('humanity:map-position', ['--auto-map' => true, '--store' => '03759-00001'])
+            ->expectsOutputToContain('Ambiguous')
+            ->assertExitCode(1);
+
+        $this->assertSame(0, HumanityPositionMap::query()->where('position_id', 10)->count());
+    }
+
+    public function test_auto_map_leaves_an_unmatched_position_unmapped(): void
+    {
+        $this->artisan('humanity:map-location', ['--store' => '03759-00001', '--location' => 'LOC-77']);
+
+        // setUp() only seeds a "Kitchen" Humanity position — nothing matches "Manager".
+        Position::query()->create(['id' => 10, 'label' => 'Manager']);
+
+        $this->artisan('humanity:map-position', ['--auto-map' => true, '--store' => '03759-00001'])
+            ->assertExitCode(0);
+
+        $this->assertSame(0, HumanityPositionMap::query()->where('position_id', 10)->count());
+    }
+
+    public function test_auto_map_with_store_option_only_touches_that_store(): void
+    {
+        Store::query()->create(['id' => 2, 'store_number' => '03759-00002', 'timezone' => 'America/Chicago']);
+
+        $this->artisan('humanity:map-location', ['--store' => '03759-00001', '--location' => 'LOC-77']);
+        $this->humanity->seedLocation('LOC-88', 'Pizza Uptown #2', 'America/Chicago');
+        $this->artisan('humanity:map-location', ['--store' => '03759-00002', '--location' => 'LOC-88']);
+
+        Position::query()->create(['id' => 10, 'label' => 'Crew Member']);
+        HumanityPosition::query()->create([
+            'humanity_position_id' => 'POS-S1', 'humanity_location_id' => 'LOC-77',
+            'name' => 'Crew Member - Downtown', 'is_active' => true,
+        ]);
+        HumanityPosition::query()->create([
+            'humanity_position_id' => 'POS-S2', 'humanity_location_id' => 'LOC-88',
+            'name' => 'Crew Member - Uptown', 'is_active' => true,
+        ]);
+
+        $this->artisan('humanity:map-position', ['--auto-map' => true, '--store' => '03759-00001'])
+            ->assertExitCode(0);
+
+        $this->assertSame(1, HumanityPositionMap::query()->where('store_id', 1)->count());
+        $this->assertSame(0, HumanityPositionMap::query()->where('store_id', 2)->count());
+    }
+
+    public function test_auto_map_without_store_covers_every_store_without_prompting(): void
+    {
+        Store::query()->create(['id' => 2, 'store_number' => '03759-00002', 'timezone' => 'America/Chicago']);
+        $this->humanity->seedLocation('LOC-88', 'Pizza Uptown #2', 'America/Chicago');
+
+        $this->artisan('humanity:map-location', ['--store' => '03759-00001', '--location' => 'LOC-77'])->assertExitCode(0);
+        $this->artisan('humanity:map-location', ['--store' => '03759-00002', '--location' => 'LOC-88'])->assertExitCode(0);
+
+        Position::query()->create(['id' => 10, 'label' => 'Crew Member']);
+        HumanityPosition::query()->create([
+            'humanity_position_id' => 'POS-S1', 'humanity_location_id' => 'LOC-77',
+            'name' => 'Crew Member - Downtown', 'is_active' => true,
+        ]);
+        HumanityPosition::query()->create([
+            'humanity_position_id' => 'POS-S2', 'humanity_location_id' => 'LOC-88',
+            'name' => 'Crew Member - Uptown', 'is_active' => true,
+        ]);
+
+        // No --store: must loop every store without ever prompting interactively.
+        $this->artisan('humanity:map-position', ['--auto-map' => true])
+            ->assertExitCode(0);
+
+        $this->assertSame('POS-S1', HumanityPositionMap::query()->where('store_id', 1)->value('humanity_position_id'));
+        $this->assertSame('POS-S2', HumanityPositionMap::query()->where('store_id', 2)->value('humanity_position_id'));
+    }
+
+    public function test_auto_map_is_idempotent(): void
+    {
+        $this->artisan('humanity:map-location', ['--store' => '03759-00001', '--location' => 'LOC-77']);
+
+        Position::query()->create(['id' => 10, 'label' => 'Crew Member']);
+        HumanityPosition::query()->create([
+            'humanity_position_id' => 'POS-STORE', 'humanity_location_id' => 'LOC-77',
+            'name' => 'Crew Member - Downtown', 'is_active' => true,
+        ]);
+
+        $this->artisan('humanity:map-position', ['--auto-map' => true, '--store' => '03759-00001'])->assertExitCode(0);
+        $this->artisan('humanity:map-position', ['--auto-map' => true, '--store' => '03759-00001'])->assertExitCode(0);
+
+        $this->assertSame(1, HumanityPositionMap::query()->where('position_id', 10)->count());
+    }
+
+    public function test_auto_map_does_not_overwrite_a_disagreeing_manual_mapping_without_force(): void
+    {
+        $this->artisan('humanity:map-location', ['--store' => '03759-00001', '--location' => 'LOC-77']);
+
+        Position::query()->create(['id' => 10, 'label' => 'Crew Member']);
+        HumanityPosition::query()->create([
+            'humanity_position_id' => 'POS-STORE', 'humanity_location_id' => 'LOC-77',
+            'name' => 'Crew Member - Downtown', 'is_active' => true,
+        ]);
+
+        // A human previously pointed this position somewhere else on purpose.
+        $this->artisan('humanity:map-position', [
+            '--store' => '03759-00001', '--humanity-position' => 'POS-11', '--position' => 10,
+        ]);
+
+        $this->artisan('humanity:map-position', ['--auto-map' => true, '--store' => '03759-00001'])
+            ->expectsOutputToContain('already mapped')
+            ->assertExitCode(0);
+
+        $this->assertSame('POS-11', HumanityPositionMap::query()->where('position_id', 10)->value('humanity_position_id'));
+
+        $this->artisan('humanity:map-position', ['--auto-map' => true, '--store' => '03759-00001', '--force' => true])
+            ->assertExitCode(0);
+
+        $this->assertSame('POS-STORE', HumanityPositionMap::query()->where('position_id', 10)->value('humanity_position_id'));
+    }
+
+    public function test_auto_map_never_touches_the_default_row(): void
+    {
+        $this->artisan('humanity:map-location', ['--store' => '03759-00001', '--location' => 'LOC-77']);
+        $this->artisan('humanity:map-position', ['--store' => '03759-00001', '--humanity-position' => 'POS-11', '--default' => true]);
+
+        Position::query()->create(['id' => 10, 'label' => 'Crew Member']);
+        HumanityPosition::query()->create([
+            'humanity_position_id' => 'POS-STORE', 'humanity_location_id' => 'LOC-77',
+            'name' => 'Crew Member - Downtown', 'is_active' => true,
+        ]);
+
+        $this->artisan('humanity:map-position', ['--auto-map' => true, '--store' => '03759-00001'])
+            ->assertExitCode(0);
+
+        $default = HumanityPositionMap::query()->whereNull('position_id')->sole();
+        $this->assertSame('POS-11', $default->humanity_position_id);
+        $this->assertTrue((bool) $default->is_default);
+    }
 }
