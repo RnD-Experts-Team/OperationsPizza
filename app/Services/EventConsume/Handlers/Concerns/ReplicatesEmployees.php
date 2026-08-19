@@ -4,15 +4,9 @@ namespace App\Services\EventConsume\Handlers\Concerns;
 
 use App\Models\Employee;
 use App\Models\EmployeeAvailabilityDay;
-use App\Models\EmployeeContact;
-use App\Models\EmployeeExternalId;
-use App\Models\EmployeePayHistory;
-use App\Models\EmployeeStatusHistory;
 use App\Models\EmployeeStore;
 use App\Models\EmployeeSyncRequest;
-use App\Models\Position;
 use App\Models\Store;
-use Illuminate\Support\Facades\DB;
 
 /**
  * Shared parsing for HiringPizza employee events.
@@ -26,6 +20,10 @@ use Illuminate\Support\Facades\DB;
  * Hiring's own sync* methods delete-and-reinsert every child collection, so a
  * collection delta ships the WHOLE array rather than a per-row patch. Every
  * collection here is therefore replaced wholesale, never merged.
+ *
+ * The snapshot still carries HiringPizza's full HR record — pay history,
+ * contacts, demographics, payroll ids. We deliberately read only the few parts
+ * a scheduling service needs and let the rest fall on the floor.
  */
 trait ReplicatesEmployees
 {
@@ -126,42 +124,19 @@ trait ReplicatesEmployees
 
     // ---------------------------------------------------------------- writes
 
-    protected function replaceContacts(int $employeeId, array $contacts): void
-    {
-        EmployeeContact::query()->where('employee_id', $employeeId)->delete();
-
-        foreach ($contacts as $contact) {
-            if (!is_array($contact)) {
-                continue;
-            }
-
-            $value = $this->stringOrNull(data_get($contact, 'contact_value'))
-                ?? $this->stringOrNull(data_get($contact, 'value'));
-
-            if ($value === null) {
-                continue;
-            }
-
-            EmployeeContact::query()->create([
-                'employee_id' => $employeeId,
-                'type' => $this->stringOrNull(data_get($contact, 'contact_type'))
-                    ?? $this->stringOrNull(data_get($contact, 'type'))
-                    ?? 'email',
-                'name' => $this->stringOrNull(data_get($contact, 'contact_name')),
-                'value' => $value,
-                'is_primary' => (bool) data_get($contact, 'is_primary', false),
-            ]);
-        }
-    }
-
     /**
-     * External ids are upserted rather than replaced, and the Humanity ID is
-     * lifted onto the employee row. Losing that link would make the employee
-     * unschedulable and trigger a spurious re-sync request.
+     * Lift the two external links we care about straight off the payload.
+     *
+     * HiringPizza's ids[] also carries payroll-system ids (Altametrics,
+     * Paychecks) that a scheduling service has no use for, so nothing is
+     * stored as rows — only the Humanity and TCP links, as columns.
+     *
+     * An ids[] array that omits a type nulls that column, matching the old
+     * delete-then-read behaviour.
      */
     protected function syncExternalIds(Employee $employee, array $ids): void
     {
-        $seen = [];
+        $byType = [];
 
         foreach ($ids as $entry) {
             if (!is_array($entry)) {
@@ -177,38 +152,20 @@ trait ReplicatesEmployees
                 continue;
             }
 
-            $seen[] = $type;
-
-            EmployeeExternalId::query()->updateOrCreate(
-                ['employee_id' => $employee->id, 'id_type' => $type],
-                ['value' => $value]
-            );
+            // First wins, matching the old unique (employee_id, id_type).
+            $byType[$type] ??= $value;
         }
 
-        EmployeeExternalId::query()
-            ->where('employee_id', $employee->id)
-            ->when($seen !== [], fn ($q) => $q->whereNotIn('id_type', $seen))
-            ->delete();
-
-        $this->liftHumanityId($employee);
-        $this->liftTcpId($employee);
+        $this->liftHumanityId($employee, $byType[Employee::HUMANITY_ID_LABEL] ?? null);
+        $this->liftTcpId($employee, $byType[Employee::TCP_ID_LABEL] ?? null);
     }
 
     /**
      * TCP Manager+ is the clocking system, so this link is what lets a punch or
-     * a worked segment be attributed to one of our employees. Same mechanism as
-     * the Humanity lift: HiringPizza records it as an external id and it rides
-     * along in the employee snapshot.
+     * a worked segment be attributed to one of our employees.
      */
-    protected function liftTcpId(Employee $employee): void
+    protected function liftTcpId(Employee $employee, ?string $tcpId): void
     {
-        $tcpId = $this->stringOrNull(
-            EmployeeExternalId::query()
-                ->where('employee_id', $employee->id)
-                ->where('id_type', EmployeeExternalId::TCP)
-                ->value('value')
-        );
-
         if ($tcpId === $employee->tcp_employee_id) {
             return;
         }
@@ -229,15 +186,8 @@ trait ReplicatesEmployees
         }
     }
 
-    protected function liftHumanityId(Employee $employee): void
+    protected function liftHumanityId(Employee $employee, ?string $humanityId): void
     {
-        $humanityId = EmployeeExternalId::query()
-            ->where('employee_id', $employee->id)
-            ->where('id_type', EmployeeExternalId::HUMANITY)
-            ->value('value');
-
-        $humanityId = $this->stringOrNull($humanityId);
-
         if ($humanityId === $employee->humanity_employee_id) {
             return;
         }
@@ -248,56 +198,75 @@ trait ReplicatesEmployees
         ])->save();
     }
 
-    protected function replaceStatusHistories(int $employeeId, array $histories): void
+    /**
+     * The wage in effect today, collapsed out of hiring's pay history.
+     *
+     * We keep a single rate rather than the history: labor costing is the only
+     * consumer, and pay history is HR data. The rate is therefore FROZEN AT
+     * INGEST — a future-dated raise does not start applying on its effective
+     * date, it applies when the next employee event lands. Nothing in
+     * scheduling reads a rate for a past date, so that trade is deliberate.
+     *
+     * Do not trust the array's order: hiring sorts it newest-first today, but
+     * this is cheap to make independent of that.
+     */
+    protected function currentHourlyRate(array $payHistories): ?string
     {
-        EmployeeStatusHistory::query()->where('employee_id', $employeeId)->delete();
+        $today = now()->toDateString();
 
-        foreach ($histories as $entry) {
+        $effectiveRate = $newestRate = null;
+        $effectiveKey = $newestKey = null;
+
+        foreach ($payHistories as $entry) {
             if (!is_array($entry)) {
                 continue;
             }
 
-            $status = $this->stringOrNull(data_get($entry, 'status'));
-            $effective = $this->stringOrNull(data_get($entry, 'effective_date'));
+            $basePay = data_get($entry, 'base_pay');
+            $date = $this->stringOrNull(data_get($entry, 'effective_date'));
 
-            if ($status === null || $effective === null) {
+            if ($date === null || $basePay === null || !is_numeric($basePay)) {
                 continue;
             }
 
-            EmployeeStatusHistory::query()->create([
-                'employee_id' => $employeeId,
-                'status' => strtolower($status),
-                'effective_date' => $effective,
-                'store_number' => $this->stringOrNull(data_get($entry, 'store.store_number')),
-            ]);
+            $timestamp = strtotime($date) ?: 0;
+            $key = [$timestamp, $this->asInt(data_get($entry, 'id'))];
+
+            if ($newestKey === null || $key > $newestKey) {
+                $newestKey = $key;
+                $newestRate = $basePay;
+            }
+
+            if (date('Y-m-d', $timestamp) <= $today && ($effectiveKey === null || $key > $effectiveKey)) {
+                $effectiveKey = $key;
+                $effectiveRate = $basePay;
+            }
         }
+
+        // All future-dated (a scheduled raise for a brand-new hire) — better to
+        // carry that rate than to report a zero-cost schedule.
+        $rate = $effectiveRate ?? $newestRate;
+
+        return $rate === null ? null : number_format((float) $rate, 4, '.', '');
     }
 
-    protected function replacePayHistories(int $employeeId, array $histories): void
+    /** The employee's current position, as text. Hiring sorts newest-first. */
+    protected function currentPositionLabel(array $positions): ?string
     {
-        EmployeePayHistory::query()->where('employee_id', $employeeId)->delete();
-
-        foreach ($histories as $entry) {
+        foreach ($positions as $entry) {
             if (!is_array($entry)) {
                 continue;
             }
 
-            $effective = $this->stringOrNull(data_get($entry, 'effective_date'));
-            $basePay = data_get($entry, 'base_pay');
+            $label = $this->stringOrNull(data_get($entry, 'position.label'))
+                ?? $this->stringOrNull(data_get($entry, 'label'));
 
-            if ($effective === null || $basePay === null) {
-                continue;
+            if ($label !== null) {
+                return $label;
             }
-
-            EmployeePayHistory::query()->create([
-                'employee_id' => $employeeId,
-                'base_pay' => (float) $basePay,
-                'performance_pay' => data_get($entry, 'performance_pay') === null
-                    ? null
-                    : (float) data_get($entry, 'performance_pay'),
-                'effective_date' => $effective,
-            ]);
         }
+
+        return null;
     }
 
     protected function replaceAvailability(int $employeeId, array $days): void
@@ -338,51 +307,6 @@ trait ReplicatesEmployees
         }
     }
 
-    protected function replacePositions(int $employeeId, array $positions): void
-    {
-        $positionIds = [];
-
-        foreach ($positions as $entry) {
-            if (!is_array($entry)) {
-                continue;
-            }
-
-            $positionId = $this->asInt(data_get($entry, 'position.id') ?? data_get($entry, 'position_id'));
-            if ($positionId <= 0) {
-                continue;
-            }
-
-            // The reference row travels inside the employee snapshot, so
-            // replicate it here rather than needing a separate catalog event.
-            Position::query()->updateOrCreate(
-                ['id' => $positionId],
-                [
-                    'label' => $this->stringOrNull(data_get($entry, 'position.label')) ?? "Position {$positionId}",
-                    'description' => $this->stringOrNull(data_get($entry, 'position.description')),
-                ]
-            );
-
-            $positionIds[$positionId] = [
-                // Hiring arrays are newest-first, so the first one wins.
-                'is_primary' => $positionIds === [],
-                'effective_date' => $this->stringOrNull(data_get($entry, 'effective_date')),
-            ];
-        }
-
-        DB::table('employee_position')->where('employee_id', $employeeId)->delete();
-
-        foreach ($positionIds as $positionId => $pivot) {
-            DB::table('employee_position')->insert([
-                'employee_id' => $employeeId,
-                'position_id' => $positionId,
-                'is_primary' => $pivot['is_primary'],
-                'effective_date' => $pivot['effective_date'],
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
-        }
-    }
-
     /**
      * Store membership, with each store's status matched from the status
      * histories that apply to it. Returns the rows so the caller can derive
@@ -414,6 +338,61 @@ trait ReplicatesEmployees
             }));
 
             $status = $this->latestStatus($matching) ?? $overallStatus;
+
+            $rows[$storeNumber] = [
+                'store_number' => $storeNumber,
+                'status' => $status,
+                'active' => $status !== null && in_array($status, Employee::ACTIVE_STATUSES, true),
+                'effective_date' => $this->stringOrNull(data_get($store, 'effective_date')),
+            ];
+        }
+
+        return array_values($rows);
+    }
+
+    /**
+     * Membership rows for a delta that changed `stores` but NOT
+     * `status_histories`.
+     *
+     * We no longer keep a status-history table to reconstruct per-store status
+     * from, so each surviving store's status is carried forward from the
+     * membership row we already hold. That is safe because employee_store.status
+     * is rewritten on every event carrying `stores` OR `status_histories` — it
+     * never drifts from the history, it IS the materialised view of it.
+     *
+     * `active` is recomputed from the carried status rather than trusting the
+     * stored boolean, so there is exactly one rule deriving it.
+     *
+     * Known divergence from the old behaviour: a store being added here takes
+     * the employee's overall current_status, whereas the history table could
+     * have held a store-specific status shipped by an earlier
+     * status_histories-only delta. That needs multi-store employees with
+     * divergent per-store status AND a split delta, and is the accepted cost of
+     * not holding an HR record.
+     *
+     * @return array<int, array{store_number:string,status:?string,active:bool,effective_date:?string}>
+     */
+    protected function carryForwardMembershipRows(int $employeeId, array $stores, ?string $currentStatus): array
+    {
+        $existing = EmployeeStore::query()
+            ->where('employee_id', $employeeId)
+            ->pluck('status', 'store_number');
+
+        $rows = [];
+
+        foreach ($stores as $store) {
+            if (!is_array($store)) {
+                continue;
+            }
+
+            $storeNumber = $this->stringOrNull(data_get($store, 'store.store_number'))
+                ?? $this->stringOrNull(data_get($store, 'store_number'));
+
+            if ($storeNumber === null || isset($rows[$storeNumber])) {
+                continue;
+            }
+
+            $status = $this->stringOrNull($existing[$storeNumber] ?? null) ?? $currentStatus;
 
             $rows[$storeNumber] = [
                 'store_number' => $storeNumber,
@@ -479,29 +458,6 @@ trait ReplicatesEmployees
         $status = $this->stringOrNull(data_get($latest, 'status'));
 
         return $status === null ? null : strtolower($status);
-    }
-
-    protected function latestStatusEffectiveDate(array $histories): ?string
-    {
-        $latest = null;
-        $latestKey = null;
-
-        foreach ($histories as $entry) {
-            if (!is_array($entry)) {
-                continue;
-            }
-
-            $date = $this->stringOrNull(data_get($entry, 'effective_date'));
-            $timestamp = $date === null ? 0 : (strtotime($date) ?: 0);
-            $key = [$timestamp, $this->asInt(data_get($entry, 'id'))];
-
-            if ($latestKey === null || $key > $latestKey) {
-                $latestKey = $key;
-                $latest = $entry;
-            }
-        }
-
-        return $this->stringOrNull(data_get($latest, 'effective_date'));
     }
 
     protected function stringOrNull(mixed $value): ?string

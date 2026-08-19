@@ -38,7 +38,7 @@ class TcpClockService
     ) {
     }
 
-    public function clockIn(Store $store, Employee $employee, ?CarbonImmutable $at = null, ?int $positionId = null, ?Request $request = null): TcpWorkSegment
+    public function clockIn(Store $store, Employee $employee, ?CarbonImmutable $at = null, ?string $positionLabel = null, ?Request $request = null): TcpWorkSegment
     {
         $this->writeGuard->assertAllowed((string) $store->store_number);
 
@@ -56,7 +56,7 @@ class TcpClockService
             );
         }
 
-        $jobCodeId = $this->jobCodes->resolve($store, $employee, $positionId);
+        $jobCodeId = $this->jobCodes->resolve($store, $employee, $positionLabel);
 
         return $this->send(
             TcpPunch::clockIn($tcpEmployeeId, $jobCodeId, $at),
@@ -109,12 +109,12 @@ class TcpClockService
     }
 
     /** Returning from break OPENS a new segment, so it needs a job code again. */
-    public function breakEnd(Store $store, Employee $employee, ?CarbonImmutable $at = null, ?int $positionId = null, ?Request $request = null): TcpWorkSegment
+    public function breakEnd(Store $store, Employee $employee, ?CarbonImmutable $at = null, ?string $positionLabel = null, ?Request $request = null): TcpWorkSegment
     {
         $this->writeGuard->assertAllowed((string) $store->store_number);
 
         $tcpEmployeeId = $this->requireTcpLink($employee);
-        $jobCodeId = $this->jobCodes->resolve($store, $employee, $positionId);
+        $jobCodeId = $this->jobCodes->resolve($store, $employee, $positionLabel);
 
         return $this->send(
             TcpPunch::breakEnd($tcpEmployeeId, $jobCodeId, $this->resolveMoment($store, $at)),
@@ -125,26 +125,46 @@ class TcpClockService
         );
     }
 
-    /** Who is currently on the clock, straight from TCP. */
+    /**
+     * Who is currently on the clock.
+     *
+     * Backs GET .../clock-status, which a dashboard polls. Read paths must not
+     * spend the daily quota per request, so the answer is cached briefly — a
+     * poll every few seconds collapses to roughly one TCP call a minute per
+     * employee. Any punch we make busts the key (see send()), so the only
+     * staleness window is a punch made at a physical clock or in TCP's own app.
+     */
     public function currentSegment(Employee $employee): ?TcpWorkSegment
     {
         if (!$employee->isLinkedToTcp()) {
             return null;
         }
 
-        $now = CarbonImmutable::now();
+        $tcpEmployeeId = (string) $employee->tcp_employee_id;
 
-        foreach ($this->tcp->listWorkSegments(
-            $now->subDay(),
-            $now->addDay(),
-            [(string) $employee->tcp_employee_id]
-        ) as $segment) {
-            if ($segment->isOpen()) {
-                return $segment;
+        // Cached as an array so a miss and a "no open segment" are distinct:
+        // [] means we asked and nobody is clocked in.
+        $cached = Cache::remember(
+            $this->openSegmentKey($tcpEmployeeId),
+            (int) config('tcp.open_segment_ttl_seconds', 60),
+            function () use ($tcpEmployeeId) {
+                $now = CarbonImmutable::now();
+
+                foreach ($this->tcp->listWorkSegments(
+                    $now->subDay(),
+                    $now->addDay(),
+                    [$tcpEmployeeId]
+                ) as $segment) {
+                    if ($segment->isOpen()) {
+                        return [$segment];
+                    }
+                }
+
+                return [];
             }
-        }
+        );
 
-        return null;
+        return $cached[0] ?? null;
     }
 
     // ---------------------------------------------------------------- internals
@@ -195,6 +215,15 @@ class TcpClockService
         // lookup on the next punch. isOpen() is the truth from TCP's own
         // response, not an assumption about what the operation should have done.
         $this->rememberClockState($punch->employeeId, $segment->isOpen());
+
+        // The segment TCP just returned IS the current one, so seed the read
+        // cache with it instead of forcing clock-status to re-fetch. Covers all
+        // four punch types, since every one of them lands here.
+        Cache::put(
+            $this->openSegmentKey($punch->employeeId),
+            $segment->isOpen() ? [$segment] : [],
+            (int) config('tcp.open_segment_ttl_seconds', 60)
+        );
 
         return $segment;
     }
@@ -269,6 +298,12 @@ class TcpClockService
     private function clockStateKey(string $tcpEmployeeId): string
     {
         return "tcp:clockstate:{$tcpEmployeeId}";
+    }
+
+    /** The open segment itself, for the clock-status read path. */
+    private function openSegmentKey(string $tcpEmployeeId): string
+    {
+        return "tcp:opensegment:{$tcpEmployeeId}";
     }
 
     /**

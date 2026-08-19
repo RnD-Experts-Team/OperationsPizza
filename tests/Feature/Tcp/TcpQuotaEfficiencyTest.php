@@ -46,7 +46,7 @@ class TcpQuotaEfficiencyTest extends TestCase
             'humanity_position_id' => 'JOB1', 'humanity_location_id' => 'LOC1', 'name' => 'Kitchen',
         ]);
         HumanityPositionMap::query()->create([
-            'store_id' => 1, 'position_id' => null, 'humanity_position_id' => 'JOB1', 'is_default' => true,
+            'store_id' => 1, 'position_label' => null, 'humanity_position_id' => 'JOB1', 'is_default' => true,
         ]);
 
         // A realistic roster: enough people that a naive sync would need

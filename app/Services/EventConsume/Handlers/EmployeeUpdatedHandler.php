@@ -3,7 +3,6 @@
 namespace App\Services\EventConsume\Handlers;
 
 use App\Models\Employee;
-use App\Models\EmployeeStatusHistory;
 use App\Models\EmployeeStore;
 use App\Services\EventConsume\EventHandlerInterface;
 use App\Services\EventConsume\Handlers\Concerns\ReplicatesEmployees;
@@ -50,7 +49,7 @@ class EmployeeUpdatedHandler implements EventHandlerInterface
             $changed = $this->changedFields($event);
             $update = [];
 
-            foreach (['first_name', 'middle_name', 'last_name', 'gender', 'employment_type'] as $field) {
+            foreach (['first_name', 'last_name'] as $field) {
                 if (array_key_exists($field, $changed)) {
                     $update[$field] = $this->resolveScalar($event, $payload, $field);
                 }
@@ -64,19 +63,9 @@ class EmployeeUpdatedHandler implements EventHandlerInterface
                 }
             }
 
-            if (array_key_exists('obsession', $changed)) {
-                $update['birth_date'] = $this->stringOrNull(data_get($changed, 'obsession.to.birth_date'));
-                $update['image_url'] = $this->stringOrNull(data_get($changed, 'obsession.to.image_url'));
-            }
-
-            $contacts = $this->resolveCollection($event, $payload, 'contacts');
-            if ($contacts !== null) {
-                $this->replaceContacts($id, $contacts);
-            }
-
             $payHistories = $this->resolveCollection($event, $payload, 'pay_histories');
             if ($payHistories !== null) {
-                $this->replacePayHistories($id, $payHistories);
+                $update['hourly_rate'] = $this->currentHourlyRate($payHistories);
             }
 
             $availability = $this->resolveCollection($event, $payload, 'availability_days');
@@ -86,19 +75,20 @@ class EmployeeUpdatedHandler implements EventHandlerInterface
 
             $positions = $this->resolveCollection($event, $payload, 'positions');
             if ($positions !== null) {
-                $this->replacePositions($id, $positions);
+                $update['position_label'] = $this->currentPositionLabel($positions);
             }
 
             $stores = $this->resolveCollection($event, $payload, 'stores');
             $statusHistories = $this->resolveCollection($event, $payload, 'status_histories');
 
             if ($statusHistories !== null) {
-                $this->replaceStatusHistories($id, $statusHistories);
+                // current_status is no longer just a denormalisation — with the
+                // status-history table gone it is the only fallback a newly
+                // added store's membership has.
                 $update['current_status'] = $this->latestStatus($statusHistories);
-                $update['current_status_effective_date'] = $this->latestStatusEffectiveDate($statusHistories);
             }
 
-            $memberships = $this->resolveMemberships($id, $stores, $statusHistories);
+            $memberships = $this->resolveMemberships($id, $stores, $statusHistories, $employee);
 
             if ($memberships !== null) {
                 $this->replaceMemberships($id, $memberships);
@@ -121,19 +111,35 @@ class EmployeeUpdatedHandler implements EventHandlerInterface
     /**
      * Membership rows for an update, or null to leave memberships untouched.
      *
-     * Status and store list change independently, so when only one of them is
-     * in the delta the other has to be reconstructed from what we already hold.
+     * Returning null when NEITHER field is in the delta is load-bearing: it is
+     * what stops an unrelated update (a name change, say) from recomputing
+     * `active` off an empty array and deactivating the employee — which would
+     * drop them from every roster and 401 their auth token.
      *
      * @return array<int, array>|null
      */
-    private function resolveMemberships(int $employeeId, ?array $stores, ?array $statusHistories): ?array
-    {
+    private function resolveMemberships(
+        int $employeeId,
+        ?array $stores,
+        ?array $statusHistories,
+        Employee $employee
+    ): ?array {
         if ($stores === null && $statusHistories === null) {
             return null;
         }
 
         if ($stores !== null) {
-            return $this->buildMembershipRows($stores, $statusHistories ?? $this->storedStatusHistories($employeeId));
+            // Both present: the wire is authoritative for each store's status.
+            if ($statusHistories !== null) {
+                return $this->buildMembershipRows($stores, $statusHistories);
+            }
+
+            // Stores only: carry each surviving store's status forward.
+            return $this->carryForwardMembershipRows(
+                $employeeId,
+                $stores,
+                $this->stringOrNull($employee->current_status)
+            );
         }
 
         // Only status changed: keep the store list, recompute each status.
@@ -145,20 +151,5 @@ class EmployeeUpdatedHandler implements EventHandlerInterface
         ])->all();
 
         return $this->buildMembershipRows($syntheticStores, $statusHistories);
-    }
-
-    /** Our replicated histories, shaped like the event payload. */
-    private function storedStatusHistories(int $employeeId): array
-    {
-        return EmployeeStatusHistory::query()
-            ->where('employee_id', $employeeId)
-            ->get()
-            ->map(fn (EmployeeStatusHistory $row) => [
-                'id' => $row->id,
-                'status' => $row->status,
-                'effective_date' => $row->effective_date?->toDateString(),
-                'store' => ['store_number' => $row->store_number],
-            ])
-            ->all();
     }
 }

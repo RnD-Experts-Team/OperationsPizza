@@ -126,7 +126,7 @@ class ScheduleWeekAssembler
     private function roster(Store $store, array $scheduledEmployeeIds, array $filters): Collection
     {
         $query = Employee::query()
-            ->with(['positions', 'contacts', 'availabilityDays.times'])
+            ->with(['availabilityDays.times'])
             ->assignedToStore((string) $store->store_number)
             ->where(function ($q) use ($scheduledEmployeeIds) {
                 $q->where('active', true);
@@ -153,13 +153,9 @@ class ScheduleWeekAssembler
             $departments = $this->employees->departmentsByPosition($store);
 
             $employees = $employees->filter(function (Employee $employee) use ($departments, $department) {
-                foreach ($employee->positions as $position) {
-                    if (($departments[$position->id] ?? null) === $department) {
-                        return true;
-                    }
-                }
+                $label = $employee->position_label;
 
-                return false;
+                return $label !== null && ($departments[$label] ?? null) === $department;
             })->values();
         }
 

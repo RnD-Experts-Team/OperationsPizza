@@ -2,7 +2,6 @@
 
 namespace App\Services\Scheduling;
 
-use App\Models\Position;
 use App\Models\ShiftAssignment;
 use App\Models\Store;
 use Carbon\CarbonImmutable;
@@ -119,9 +118,4 @@ class ShiftQueryService
         )));
     }
 
-    /** position_id → label, for the department column. */
-    public function positionLabels(): array
-    {
-        return Position::query()->pluck('label', 'id')->all();
-    }
 }

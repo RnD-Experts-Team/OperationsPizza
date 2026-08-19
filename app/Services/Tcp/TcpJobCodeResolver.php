@@ -16,6 +16,11 @@ use App\Services\Scheduling\Exceptions\SchedulingException;
  * so the match is: same store, description starts with the position label,
  * case-insensitive.
  *
+ * Matching on the label TEXT is exactly why this service does not replicate
+ * HiringPizza's position catalog — the employee carries their label as a
+ * string and that is all this needs. Reads the local mirror only; the catalog
+ * is refreshed by tcp:sync-catalog, never fetched per punch.
+ *
  * This deliberately does NOT go through the Humanity position mapping — a
  * Humanity position id is Humanity's own key and shares nothing with TCP's
  * jobCodeId, so resolving through it sent garbage codes with every punch.
@@ -25,29 +30,12 @@ use App\Services\Scheduling\Exceptions\SchedulingException;
  */
 class TcpJobCodeResolver
 {
-    public function resolve(Store $store, ?Employee $employee = null, ?int $positionId = null): string
+    public function resolve(Store $store, ?Employee $employee = null, ?string $label = null): string
     {
-        $labels = [];
-
-        if ($positionId !== null) {
-            $label = \App\Models\Position::query()->whereKey($positionId)->value('label');
-
-            if (filled($label)) {
-                $labels[] = (string) $label;
-            }
-        }
-
-        if ($employee !== null) {
-            $positions = $employee->relationLoaded('positions')
-                ? $employee->positions
-                : $employee->positions()->get();
-
-            foreach ($positions->sortByDesc(fn ($p) => (int) ($p->pivot->is_primary ?? 0)) as $position) {
-                if (filled($position->label)) {
-                    $labels[] = (string) $position->label;
-                }
-            }
-        }
+        $labels = array_values(array_unique(array_filter([
+            $label,
+            $employee?->position_label,
+        ], fn ($value) => filled($value))));
 
         $storeCodes = TcpJobCode::query()
             ->where('store_number', (string) $store->store_number)
@@ -55,9 +43,9 @@ class TcpJobCodeResolver
             ->where('is_active', true)
             ->get();
 
-        foreach (array_unique($labels) as $label) {
+        foreach ($labels as $candidate) {
             $match = $storeCodes->first(
-                fn (TcpJobCode $code) => stripos($code->description, $label) === 0
+                fn (TcpJobCode $code) => stripos($code->description, $candidate) === 0
             );
 
             if ($match !== null) {

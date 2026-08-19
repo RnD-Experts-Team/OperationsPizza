@@ -58,7 +58,7 @@ class ShiftWriteService
 
     /**
      * @param  array{employee_id:int, shift_date:string, start_time:string, end_time:string, label?:string,
-     *               shift_type?:string, note?:string, position_id?:int, slots?:int, force?:bool}  $data
+     *               shift_type?:string, note?:string, position_label?:string, slots?:int, force?:bool}  $data
      */
     public function create(Store $store, array $data, ?Request $request = null): Shift
     {
@@ -79,7 +79,7 @@ class ShiftWriteService
         $this->guard($store, $employee, $time, $settings, (bool) ($data['force'] ?? false));
 
         $locationId = $this->positions->locationId($store);
-        $positionId = $this->positions->positionId($store, $employee, $data['position_id'] ?? null);
+        $positionId = $this->positions->positionId($store, $employee, $data['position_label'] ?? null);
 
         $humanityEmployeeId = $this->requireHumanityLink($employee, $store, $request);
 
@@ -183,8 +183,8 @@ class ShiftWriteService
         $this->guard($store, $employee, $time, $settings, (bool) ($data['force'] ?? false), $shift->id);
 
         $locationId = $shift->humanity_location_id ?: $this->positions->locationId($store);
-        $positionId = $data['position_id'] ?? null
-            ? $this->positions->positionId($store, $employee, (int) $data['position_id'])
+        $positionId = filled($data['position_label'] ?? null)
+            ? $this->positions->positionId($store, $employee, (string) $data['position_label'])
             : ($shift->humanity_position_id ?: $this->positions->positionId($store, $employee));
 
         $humanityEmployeeId = $this->requireHumanityLink($employee, $store, $request);
@@ -364,7 +364,7 @@ class ShiftWriteService
     private function resolveEmployee(Store $store, int $employeeId): Employee
     {
         $employee = Employee::query()
-            ->with(['positions', 'availabilityDays.times'])
+            ->with(['availabilityDays.times'])
             ->assignedToStore((string) $store->store_number)
             ->find($employeeId);
 

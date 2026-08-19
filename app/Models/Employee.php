@@ -5,13 +5,18 @@ namespace App\Models;
 use App\Models\Concerns\ReplicatedModel;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 /**
  * Replicated from HiringPizza via hiring.v1.employee.*. Never written here
  * except by the event handlers and the Humanity-link backfill.
+ *
+ * Deliberately thin: HiringPizza owns employees, so this carries only what
+ * SCHEDULING needs — who they are, whether they are active, where they work,
+ * their availability, the two external links, and their position as text. The
+ * snapshot still ships pay history, contacts and demographics; we drop them on
+ * arrival rather than store an HR record we have no business holding.
  */
 class Employee extends Model
 {
@@ -20,18 +25,22 @@ class Employee extends Model
     /** Statuses that make a store membership (and thus the employee) active. */
     public const ACTIVE_STATUSES = ['hired', 'rehired'];
 
+    /**
+     * HiringPizza's id_type labels, as they appear in the snapshot's ids[].
+     * Kept here (rather than on a model of their own) because we no longer
+     * store external ids as rows — they are lifted straight onto this table.
+     */
+    public const HUMANITY_ID_LABEL = 'Humanity ID';
+    public const TCP_ID_LABEL = 'TCP ID';
+
     protected $fillable = [
         'id',
         'first_name',
-        'middle_name',
         'last_name',
-        'gender',
-        'employment_type',
-        'birth_date',
-        'image_url',
         'active',
         'current_status',
-        'current_status_effective_date',
+        'hourly_rate',
+        'position_label',
         'humanity_employee_id',
         'humanity_synced_at',
         'tcp_employee_id',
@@ -43,37 +52,11 @@ class Employee extends Model
     {
         return [
             'active' => 'boolean',
-            'birth_date' => 'date',
-            'current_status_effective_date' => 'date',
+            'hourly_rate' => 'decimal:4',
             'humanity_synced_at' => 'datetime',
             'tcp_synced_at' => 'datetime',
             'hiring_event_at' => 'datetime',
         ];
-    }
-
-    public function getFullNameAttribute(): string
-    {
-        return trim("{$this->first_name} {$this->last_name}");
-    }
-
-    public function contacts(): HasMany
-    {
-        return $this->hasMany(EmployeeContact::class);
-    }
-
-    public function externalIds(): HasMany
-    {
-        return $this->hasMany(EmployeeExternalId::class);
-    }
-
-    public function statusHistories(): HasMany
-    {
-        return $this->hasMany(EmployeeStatusHistory::class);
-    }
-
-    public function payHistories(): HasMany
-    {
-        return $this->hasMany(EmployeePayHistory::class);
     }
 
     public function availabilityDays(): HasMany
@@ -86,39 +69,9 @@ class Employee extends Model
         return $this->hasMany(EmployeeStore::class);
     }
 
-    public function positions(): BelongsToMany
-    {
-        return $this->belongsToMany(Position::class, 'employee_position')
-            ->withPivot(['is_primary', 'effective_date'])
-            ->withTimestamps();
-    }
-
     public function syncRequest(): \Illuminate\Database\Eloquent\Relations\HasOne
     {
         return $this->hasOne(EmployeeSyncRequest::class);
-    }
-
-    /** Primary email, falling back to any email on file. */
-    public function primaryEmail(): ?string
-    {
-        return $this->contactValue('email');
-    }
-
-    public function primaryPhone(): ?string
-    {
-        return $this->contactValue('phone');
-    }
-
-    private function contactValue(string $type): ?string
-    {
-        $contacts = $this->relationLoaded('contacts')
-            ? $this->contacts
-            : $this->contacts()->where('type', $type)->get();
-
-        return $contacts
-            ->where('type', $type)
-            ->sortByDesc('is_primary')
-            ->first()?->value;
     }
 
     public function scopeAssignedToStore(Builder $query, string $storeNumber): Builder

@@ -56,7 +56,7 @@ class TcpClockingTest extends TestCase
         ]);
         HumanityPositionMap::query()->create([
             'store_id' => 1,
-            'position_id' => null,
+            'position_label' => null,
             'humanity_position_id' => 'JOB1',
             'is_default' => true,
         ]);
@@ -72,17 +72,14 @@ class TcpClockingTest extends TestCase
             'is_active' => true,
         ]);
 
-        \App\Models\Position::query()->create(['id' => 9, 'label' => 'Kitchen']);
-
         $this->employee = Employee::query()->create([
             'id' => 501,
             'first_name' => 'Marco',
             'last_name' => 'Rossi',
             'active' => true,
             'tcp_employee_id' => '501',
+            'position_label' => 'Kitchen',
         ]);
-
-        $this->employee->positions()->attach(9, ['is_primary' => true, 'effective_date' => '2026-01-01']);
 
         EmployeeStore::query()->create([
             'employee_id' => 501,
@@ -114,6 +111,35 @@ class TcpClockingTest extends TestCase
         $this->assertSame('501', $segment->employeeId);
         $this->assertSame('JOB1', $segment->jobCodeId);
         $this->assertNotNull($this->tcp->openSegmentFor('501'));
+    }
+
+    public function test_clock_status_does_not_hit_tcp_on_every_read(): void
+    {
+        $this->clock()->clockIn($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 09:00', 'America/Chicago'));
+
+        // The punch response already told us the current segment, so a poll
+        // right after one must not spend a call from the 2500/day quota.
+        $before = count(array_filter($this->tcp->calls, fn ($c) => $c['op'] === 'listWorkSegments'));
+
+        $this->assertNotNull($this->clock()->currentSegment($this->employee));
+        $this->assertNotNull($this->clock()->currentSegment($this->employee));
+        $this->assertNotNull($this->clock()->currentSegment($this->employee));
+
+        $after = count(array_filter($this->tcp->calls, fn ($c) => $c['op'] === 'listWorkSegments'));
+
+        $this->assertSame($before, $after, 'clock-status must be served from cache, not TCP.');
+    }
+
+    public function test_clock_status_reflects_our_own_punch_immediately(): void
+    {
+        $this->clock()->clockIn($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 09:00', 'America/Chicago'));
+        $this->assertNotNull($this->clock()->currentSegment($this->employee));
+
+        // A cache that outlived our own clock-out would report someone still
+        // on the clock — worse than the call it saves.
+        $this->clock()->clockOut($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 17:00', 'America/Chicago'));
+
+        $this->assertNull($this->clock()->currentSegment($this->employee));
     }
 
     public function test_clock_out_closes_the_open_segment(): void

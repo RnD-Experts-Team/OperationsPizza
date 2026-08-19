@@ -2,39 +2,41 @@
 
 namespace App\Console\Commands;
 
+use App\Models\Employee;
 use App\Models\HumanityLocation;
 use App\Models\HumanityPosition;
 use App\Models\HumanityPositionMap;
-use App\Models\Position;
 use App\Models\Store;
 use Illuminate\Console\Command;
 use Illuminate\Support\Collection;
 
 /**
- * Maps one of our positions to a Humanity position, per store.
+ * Maps a position LABEL to a Humanity position, per store.
  *
  * Humanity's object model is Location -> Position -> Shift, and its shift API
  * spells Position as the `schedule` parameter. Every shift must belong to one,
- * so a store needs AT MINIMUM a default row (position_id NULL) before any shift
- * can be created — that is the fallback HumanityPositionResolver lands on when
- * an employee has no mapped position of their own.
+ * so a store needs AT MINIMUM a default row (position_label NULL) before a
+ * shift can be created for someone whose label maps to nothing.
  *
- * Our positions replicate from HiringPizza inside employee snapshots, so this
- * only offers positions that have actually arrived.
+ * Labels, not position ids: this service does not replicate HiringPizza's
+ * position catalog — each employee carries their position as text. So the set
+ * of mappable labels is whatever the replicated roster actually has.
+ *
+ * Everything here reads local tables. It never calls Humanity.
  */
 class MapHumanityPositionCommand extends Command
 {
     protected $signature = 'humanity:map-position
         {--store= : store_number, e.g. 03759-00001; omit with --auto-map to cover every store}
         {--humanity-position= : Humanity position id}
-        {--position= : our positions.id; omit together with --default}
-        {--default : Map the store default (position_id NULL) used when an employee has no mapped position}
+        {--label= : our position label, e.g. "Crew Member"; omit together with --default}
+        {--default : Map the store default (position_label NULL), used when a label maps to nothing}
         {--list : Show this store\'s position mappings}
-        {--unmap : Remove the mapping identified by --position/--default}
-        {--auto-map : Bulk-map every local position to a Humanity position per store, by store-suffixed label prefix}
+        {--unmap : Remove the mapping identified by --label/--default}
+        {--auto-map : Bulk-map every position label in the store\'s roster, by store-suffixed label prefix}
         {--force : With --auto-map, overwrite an existing mapping that disagrees with the auto-computed match}';
 
-    protected $description = 'Map a position to its Humanity position for a store';
+    protected $description = 'Map a position label to its Humanity position for a store';
 
     public function handle(): int
     {
@@ -55,8 +57,8 @@ class MapHumanityPositionCommand extends Command
             return $this->unmap($store);
         }
 
-        $positionId = $this->resolvePositionId();
-        if ($positionId === false) {
+        $label = $this->resolveLabel($store);
+        if ($label === false) {
             return self::FAILURE;
         }
 
@@ -65,31 +67,28 @@ class MapHumanityPositionCommand extends Command
             return self::FAILURE;
         }
 
-        $isDefault = $positionId === null;
+        $isDefault = $label === null;
 
         HumanityPositionMap::query()->updateOrCreate(
-            ['store_id' => $store->id, 'position_id' => $positionId],
+            ['store_id' => $store->id, 'position_label' => $label],
             ['humanity_position_id' => $humanityPositionId, 'is_default' => $isDefault]
         );
-
-        $label = $isDefault
-            ? 'default'
-            : (Position::query()->find($positionId)?->label ?? "position #{$positionId}");
 
         $humanityName = HumanityPosition::query()
             ->where('humanity_position_id', $humanityPositionId)
             ->value('name');
 
-        $this->info("Mapped {$store->store_number} / {$label} → Humanity position {$humanityPositionId}"
+        $this->info("Mapped {$store->store_number} / " . ($label ?? 'default') . " → Humanity position {$humanityPositionId}"
             . ($humanityName ? " ({$humanityName})" : ''));
 
         return self::SUCCESS;
     }
 
     /**
-     * Bulk-maps every local position to a Humanity position, per store, by the
-     * same store-suffixed label-prefix convention TcpJobCodeResolver uses for
-     * TCP job codes ("Crew Member" -> "Crew Member - 3795-01").
+     * Bulk-maps every position label in a store's roster to a Humanity
+     * position, by the same store-suffixed label-prefix convention
+     * TcpJobCodeResolver uses for TCP job codes ("Crew Member" ->
+     * "Crew Member - 3795-01").
      *
      * The real catalog carries BOTH a bare label ("Crew Member") and per-store
      * suffixed ones for the same role, so matching against the full candidate
@@ -98,20 +97,20 @@ class MapHumanityPositionCommand extends Command
      * first; the global tier is only a fallback when nothing store-scoped
      * matches.
      *
-     * Never touches the position_id=NULL default row (that stays a deliberate,
-     * manual --default action), and never overwrites a mapping that already
-     * disagrees with the computed match unless --force is passed — this must
-     * be safe to re-run without undoing hand-made corrections.
+     * Never touches the position_label=NULL default row (that stays a
+     * deliberate, manual --default action), and never overwrites a mapping that
+     * already disagrees with the computed match unless --force is passed — this
+     * must be safe to re-run without undoing hand-made corrections.
      */
     private function autoMap(): int
     {
-        if ($this->option('position') !== null
+        if ($this->option('label') !== null
             || $this->option('humanity-position') !== null
             || $this->option('default')
             || $this->option('list')
             || $this->option('unmap')
         ) {
-            $this->error('--auto-map cannot be combined with --position, --humanity-position, --default, --list, or --unmap.');
+            $this->error('--auto-map cannot be combined with --label, --humanity-position, --default, --list, or --unmap.');
 
             return self::FAILURE;
         }
@@ -128,11 +127,10 @@ class MapHumanityPositionCommand extends Command
             return self::FAILURE;
         }
 
-        $positions = Position::query()->orderBy('label')->get();
         $force = (bool) $this->option('force');
 
         $matched = 0;
-        $unmapped = 0;
+        $unmapped = [];
         $ambiguous = [];
         $conflicts = 0;
         $skippedStores = 0;
@@ -154,13 +152,19 @@ class MapHumanityPositionCommand extends Command
                 continue;
             }
 
+            $labels = $this->rosterLabels($store);
+
+            if ($labels === []) {
+                $this->warn("  {$store->store_number}: no employee carries a position label — nothing to map.");
+
+                continue;
+            }
+
             $humanityLocationId = HumanityLocation::query()
                 ->where('store_id', $store->id)
                 ->value('humanity_location_id');
 
-            foreach ($positions as $position) {
-                $label = (string) $position->label;
-
+            foreach ($labels as $label) {
                 $storeScoped = $candidates->filter(
                     fn (HumanityPosition $p) => $p->humanity_location_id === $humanityLocationId
                         && stripos($p->name, $label) === 0
@@ -172,7 +176,7 @@ class MapHumanityPositionCommand extends Command
                 );
 
                 if ($matches->isEmpty()) {
-                    $unmapped++;
+                    $unmapped[] = "{$store->store_number} / {$label}";
 
                     continue;
                 }
@@ -192,7 +196,7 @@ class MapHumanityPositionCommand extends Command
 
                 $existing = HumanityPositionMap::query()
                     ->where('store_id', $store->id)
-                    ->where('position_id', $position->id)
+                    ->where('position_label', $label)
                     ->first();
 
                 if ($existing !== null && $existing->humanity_position_id !== $match->humanity_position_id && !$force) {
@@ -209,7 +213,7 @@ class MapHumanityPositionCommand extends Command
                 }
 
                 HumanityPositionMap::query()->updateOrCreate(
-                    ['store_id' => $store->id, 'position_id' => $position->id],
+                    ['store_id' => $store->id, 'position_label' => $label],
                     ['humanity_position_id' => $match->humanity_position_id, 'is_default' => false]
                 );
 
@@ -218,16 +222,27 @@ class MapHumanityPositionCommand extends Command
         }
 
         $this->table(['metric', 'count'], [
-            ['positions matched', $matched],
-            ['positions unmapped (no match)', $unmapped],
-            ['positions ambiguous', count($ambiguous)],
+            ['labels matched', $matched],
+            ['labels unmapped (no match)', count($unmapped)],
+            ['labels ambiguous', count($ambiguous)],
             ['existing mappings left unchanged (conflict)', $conflicts],
             ['stores skipped (no location / no positions)', $skippedStores],
         ]);
 
+        // Unmapped is a warning, not a failure: those labels fall through to
+        // the store default, so shifts still write.
+        if ($unmapped !== []) {
+            $this->newLine();
+            $this->warn('No Humanity position matched (these fall back to the store default):');
+
+            foreach ($unmapped as $line) {
+                $this->line("  {$line}");
+            }
+        }
+
         if ($ambiguous !== []) {
             $this->newLine();
-            $this->error('Ambiguous — resolve by hand with --position/--humanity-position:');
+            $this->error('Ambiguous — resolve by hand with --label/--humanity-position:');
 
             foreach ($ambiguous as $line) {
                 $this->line("  {$line}");
@@ -237,10 +252,29 @@ class MapHumanityPositionCommand extends Command
         return $ambiguous === [] ? self::SUCCESS : self::FAILURE;
     }
 
+    /**
+     * The distinct position labels actually present on this store's roster.
+     *
+     * There is no local position catalog to enumerate — labels arrive on the
+     * employees themselves, so a label nobody holds yet simply isn't mappable
+     * until someone does.
+     *
+     * @return array<int, string>
+     */
+    private function rosterLabels(Store $store): array
+    {
+        return Employee::query()
+            ->assignedToStore((string) $store->store_number)
+            ->whereNotNull('position_label')
+            ->distinct()
+            ->orderBy('position_label')
+            ->pluck('position_label')
+            ->all();
+    }
+
     private function list(Store $store): int
     {
         $rows = HumanityPositionMap::query()->where('store_id', $store->id)->get();
-        $positions = Position::query()->pluck('label', 'id');
         $humanityNames = HumanityPosition::query()->pluck('name', 'humanity_position_id');
 
         if ($rows->isEmpty()) {
@@ -252,29 +286,28 @@ class MapHumanityPositionCommand extends Command
         }
 
         $this->table(
-            ['our position', 'humanity_position_id', 'humanity name', 'default'],
+            ['our label', 'humanity_position_id', 'humanity name', 'default'],
             $rows->map(fn (HumanityPositionMap $row) => [
-                $row->position_id === null ? '(store default)' : ($positions[$row->position_id] ?? "#{$row->position_id}"),
+                $row->position_label ?? '(store default)',
                 $row->humanity_position_id,
                 $humanityNames[$row->humanity_position_id] ?? '—',
                 $row->is_default ? 'yes' : '',
             ])->all()
         );
 
-        if (!$rows->contains(fn (HumanityPositionMap $row) => $row->position_id === null)) {
+        if (!$rows->contains(fn (HumanityPositionMap $row) => $row->position_label === null)) {
             $this->newLine();
-            $this->warn('No default row. An employee whose position is unmapped cannot be scheduled.');
+            $this->warn('No default row. An employee whose label is unmapped cannot be scheduled.');
         }
 
-        $unmapped = Position::query()
-            ->whereNotIn('id', $rows->pluck('position_id')->filter()->all())
-            ->pluck('label', 'id');
+        $mapped = $rows->pluck('position_label')->filter()->all();
+        $unmapped = array_values(array_diff($this->rosterLabels($store), $mapped));
 
-        if ($unmapped->isNotEmpty()) {
+        if ($unmapped !== []) {
             $this->newLine();
-            $this->line('<info>Our positions with no mapping (they fall back to the default)</info>');
-            foreach ($unmapped as $id => $label) {
-                $this->line("  {$id}  {$label}");
+            $this->line('<info>Roster labels with no mapping (they fall back to the default)</info>');
+            foreach ($unmapped as $label) {
+                $this->line("  {$label}");
             }
         }
 
@@ -283,14 +316,14 @@ class MapHumanityPositionCommand extends Command
 
     private function unmap(Store $store): int
     {
-        $positionId = $this->resolvePositionId();
-        if ($positionId === false) {
+        $label = $this->resolveLabel($store);
+        if ($label === false) {
             return self::FAILURE;
         }
 
         $deleted = HumanityPositionMap::query()
             ->where('store_id', $store->id)
-            ->where(fn ($q) => $positionId === null ? $q->whereNull('position_id') : $q->where('position_id', $positionId))
+            ->where(fn ($q) => $label === null ? $q->whereNull('position_label') : $q->where('position_label', $label))
             ->delete();
 
         if ($deleted === 0) {
@@ -299,10 +332,10 @@ class MapHumanityPositionCommand extends Command
             return self::SUCCESS;
         }
 
-        if ($positionId === null) {
-            $this->warn('Removed the DEFAULT mapping. Employees with no mapped position can no longer be scheduled.');
+        if ($label === null) {
+            $this->warn('Removed the DEFAULT mapping. Employees whose label is unmapped can no longer be scheduled.');
         } else {
-            $this->info('Mapping removed; that position now falls back to the store default.');
+            $this->info('Mapping removed; that label now falls back to the store default.');
         }
 
         return self::SUCCESS;
@@ -335,38 +368,27 @@ class MapHumanityPositionCommand extends Command
         return $store;
     }
 
-    /** @return int|null|false  null = the store default; false = the caller should abort */
-    private function resolvePositionId(): int|null|false
+    /** @return string|null|false  null = the store default; false = the caller should abort */
+    private function resolveLabel(Store $store): string|null|false
     {
         if ($this->option('default')) {
             return null;
         }
 
-        $positionId = $this->option('position');
+        $label = $this->option('label');
 
-        if ($positionId !== null) {
-            if (Position::query()->find((int) $positionId) === null) {
-                $this->error("Position {$positionId} does not exist. Positions replicate from HiringPizza inside employee snapshots.");
-
-                return false;
-            }
-
-            return (int) $positionId;
+        if ($label !== null) {
+            return (string) $label;
         }
 
-        $positions = Position::query()->orderBy('label')->pluck('label', 'id');
+        $labels = $this->rosterLabels($store);
 
-        $choices = ['(store default — used when an employee has no mapped position)'];
-        $ids = [null];
+        $choices = ['(store default — used when a label maps to nothing)'];
+        array_push($choices, ...$labels);
 
-        foreach ($positions as $id => $label) {
-            $choices[] = "{$id}  {$label}";
-            $ids[] = (int) $id;
-        }
+        $picked = $this->choice('Map which label?', $choices);
 
-        $picked = $this->choice('Map which position?', $choices);
-
-        return $ids[array_search($picked, $choices, true)];
+        return $picked === $choices[0] ? null : (string) $picked;
     }
 
     private function resolveHumanityPositionId(Store $store): ?string

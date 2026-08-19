@@ -79,6 +79,15 @@ return [
      | because an employee can also punch at a physical clock or in TCP's app.
      */
     'clock_state_ttl_seconds' => 900,
+
+    /*
+     | How long GET .../clock-status may serve a cached open segment.
+     | Read paths must not spend the daily quota per request — a polling
+     | dashboard would drain it alone. Short, because a punch made at a
+     | physical clock is invisible to us until this expires; our own punches
+     | refresh it immediately.
+     */
+    'open_segment_ttl_seconds' => 60,
     // A punch older than this is treated as a correction and always verified
     // against TCP, because our cache describes "now", not last Tuesday.
     'clock_state_trust_minutes' => 15,

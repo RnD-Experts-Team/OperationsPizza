@@ -53,7 +53,6 @@ class ScheduleController extends Controller
         $store = $this->resolveStore($storeId);
 
         $employees = Employee::query()
-            ->with(['positions', 'contacts'])
             ->assignedToStore((string) $store->store_number)
             ->schedulable()
             ->when($request->string('search')->isNotEmpty(), function ($query) use ($request) {

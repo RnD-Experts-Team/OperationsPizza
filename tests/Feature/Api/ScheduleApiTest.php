@@ -49,7 +49,7 @@ class ScheduleApiTest extends TestCase
 
         HumanityLocation::query()->create(['store_id' => 1, 'humanity_location_id' => 'LOC1', 'name' => 'Downtown']);
         HumanityPosition::query()->create(['humanity_position_id' => 'POS1', 'humanity_location_id' => 'LOC1', 'name' => 'Kitchen']);
-        HumanityPositionMap::query()->create(['store_id' => 1, 'position_id' => null, 'humanity_position_id' => 'POS1', 'is_default' => true]);
+        HumanityPositionMap::query()->create(['store_id' => 1, 'position_label' => null, 'humanity_position_id' => 'POS1', 'is_default' => true]);
 
         Employee::query()->create([
             'id' => 501,

@@ -3,7 +3,6 @@
 namespace Tests\Feature\EventConsume;
 
 use App\Models\Employee;
-use App\Models\EmployeeExternalId;
 use App\Models\EmployeeSyncRequest;
 use App\Models\Store;
 use App\Services\EventConsume\Handlers\EmployeeCreatedHandler;
@@ -80,15 +79,16 @@ class EmployeeReplicationTest extends TestCase
     {
         app(EmployeeCreatedHandler::class)->handle($this->createdEvent());
 
-        $employee = Employee::with(['contacts', 'positions', 'stores', 'availabilityDays.times'])->find(501);
+        $employee = Employee::with(['stores', 'availabilityDays.times'])->find(501);
 
         $this->assertNotNull($employee);
         $this->assertSame(501, $employee->id);
-        $this->assertSame('Marco Rossi', $employee->full_name);
-        $this->assertSame('marco@example.com', $employee->primaryEmail());
-        $this->assertSame('555-0100', $employee->primaryPhone());
-        $this->assertSame('1995-04-02', $employee->birth_date->toDateString());
-        $this->assertSame('Pizzaiolo', $employee->positions->first()->label);
+        $this->assertSame('Marco', $employee->first_name);
+        $this->assertSame('Rossi', $employee->last_name);
+        // Position collapses to a label; the wage collapses to one rate. The
+        // snapshot still ships contacts/demographics — we drop them on arrival.
+        $this->assertSame('Pizzaiolo', $employee->position_label);
+        $this->assertSame('16.5000', $employee->hourly_rate);
         $this->assertSame('03759-00001', $employee->stores->first()->store_number);
         // store_id backfilled because the store had already replicated.
         $this->assertSame(1, $employee->stores->first()->store_id);
@@ -157,12 +157,12 @@ class EmployeeReplicationTest extends TestCase
             ],
         ]);
 
-        $employee = Employee::with('positions')->find(501);
+        $employee = Employee::find(501);
         $this->assertSame('Rossi-Bianchi', $employee->last_name);
         // Not in the delta → untouched, including every collection.
         $this->assertSame('Marco', $employee->first_name);
-        $this->assertCount(1, $employee->positions);
-        $this->assertSame('marco@example.com', $employee->primaryEmail());
+        $this->assertSame('Pizzaiolo', $employee->position_label);
+        $this->assertSame('16.5000', $employee->hourly_rate);
     }
 
     public function test_a_collection_delta_replaces_the_whole_collection(): void
@@ -174,21 +174,25 @@ class EmployeeReplicationTest extends TestCase
             'data' => [
                 'employee_id' => 501,
                 'changed_fields' => [
-                    'contacts' => [
+                    'availability_days' => [
                         'from' => [],
                         'to' => [
-                            ['contact_type' => 'email', 'contact_value' => 'm.rossi@example.com', 'is_primary' => true],
+                            [
+                                'day_of_week' => 'friday',
+                                'shift_type' => 'PM',
+                                'times' => [['available_from' => '17:00:00', 'available_to' => '23:00:00']],
+                            ],
                         ],
                     ],
                 ],
             ],
         ]);
 
-        $employee = Employee::with('contacts')->find(501);
+        $employee = Employee::with('availabilityDays.times')->find(501);
         // Hiring delete-and-reinserts child rows, so the delta is the whole
-        // array — merging would leave the stale phone behind.
-        $this->assertCount(1, $employee->contacts);
-        $this->assertSame('m.rossi@example.com', $employee->primaryEmail());
+        // array — merging would leave the stale Monday behind.
+        $this->assertCount(1, $employee->availabilityDays);
+        $this->assertSame('friday', $employee->availabilityDays->first()->day_of_week);
     }
 
     public function test_a_status_only_delta_recomputes_active_without_losing_stores(): void
@@ -313,7 +317,64 @@ class EmployeeReplicationTest extends TestCase
         app(EmployeeCreatedHandler::class)->handle($this->createdEvent());
 
         $this->assertSame(1, Employee::count());
-        $this->assertCount(2, Employee::with('contacts')->find(501)->contacts);
-        $this->assertSame(1, EmployeeExternalId::where('employee_id', 501)->count());
+        $this->assertCount(1, Employee::with('availabilityDays')->find(501)->availabilityDays);
+        $this->assertSame(1, \App\Models\EmployeeStore::where('employee_id', 501)->count());
+    }
+
+    public function test_a_stores_only_delta_carries_each_store_status_forward(): void
+    {
+        app(EmployeeCreatedHandler::class)->handle($this->createdEvent());
+
+        Store::query()->create(['id' => 2, 'store_number' => '03759-00002', 'timezone' => 'America/Chicago']);
+
+        // Only `stores` changes. With no replicated status history to rebuild
+        // from, the surviving store keeps its status and the new one inherits
+        // current_status — anything else would silently deactivate the person
+        // and 401 their token.
+        app(EmployeeUpdatedHandler::class)->handle([
+            'time' => '2026-08-02T12:00:00+00:00',
+            'data' => [
+                'employee_id' => 501,
+                'changed_fields' => [
+                    'stores' => [
+                        'from' => [],
+                        'to' => [
+                            ['effective_date' => '2026-01-15', 'store' => ['id' => 1, 'store_number' => '03759-00001']],
+                            ['effective_date' => '2026-02-01', 'store' => ['id' => 2, 'store_number' => '03759-00002']],
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $employee = Employee::with('stores')->find(501);
+
+        $this->assertTrue($employee->active);
+        $this->assertCount(2, $employee->stores);
+
+        foreach ($employee->stores as $membership) {
+            $this->assertSame('hired', $membership->status);
+            $this->assertTrue($membership->active);
+        }
+    }
+
+    public function test_a_stores_only_delta_that_removes_a_store_drops_that_membership(): void
+    {
+        app(EmployeeCreatedHandler::class)->handle($this->createdEvent());
+
+        app(EmployeeUpdatedHandler::class)->handle([
+            'time' => '2026-08-02T12:00:00+00:00',
+            'data' => [
+                'employee_id' => 501,
+                'changed_fields' => [
+                    'stores' => ['from' => [], 'to' => []],
+                ],
+            ],
+        ]);
+
+        $employee = Employee::with('stores')->find(501);
+
+        $this->assertCount(0, $employee->stores);
+        $this->assertFalse($employee->active);
     }
 }

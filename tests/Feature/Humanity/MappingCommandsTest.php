@@ -3,10 +3,10 @@
 namespace Tests\Feature\Humanity;
 
 use App\Models\Employee;
+use App\Models\EmployeeStore;
 use App\Models\HumanityLocation;
 use App\Models\HumanityPosition;
 use App\Models\HumanityPositionMap;
-use App\Models\Position;
 use App\Models\Store;
 use App\Services\Humanity\FakeHumanityClient;
 use App\Services\Humanity\HumanityPositionResolver;
@@ -103,7 +103,7 @@ class MappingCommandsTest extends TestCase
         ])->assertExitCode(0);
 
         $row = HumanityPositionMap::sole();
-        $this->assertNull($row->position_id);
+        $this->assertNull($row->position_label);
         $this->assertTrue($row->is_default);
         $this->assertSame('POS-11', $row->humanity_position_id);
     }
@@ -183,21 +183,16 @@ class MappingCommandsTest extends TestCase
             'is_active' => true,
         ]);
 
-        Position::query()->create(['id' => 4, 'label' => 'Driver']);
-
-        $employee = Employee::query()->create([
-            'id' => 501, 'first_name' => 'A', 'last_name' => 'B', 'active' => true,
-        ]);
-        $employee->positions()->attach(4, ['is_primary' => true]);
+        $employee = $this->employeeWithLabel(501, 'Driver');
 
         $this->artisan('humanity:map-location', ['--store' => '03759-00001', '--location' => 'LOC-77']);
         $this->artisan('humanity:map-position', ['--store' => '03759-00001', '--humanity-position' => 'POS-11', '--default' => true]);
-        $this->artisan('humanity:map-position', ['--store' => '03759-00001', '--humanity-position' => 'POS-22', '--position' => 4]);
+        $this->artisan('humanity:map-position', ['--store' => '03759-00001', '--humanity-position' => 'POS-22', '--label' => 'Driver']);
 
         $resolver = app(HumanityPositionResolver::class);
 
-        $this->assertSame('POS-22', $resolver->positionId($store, $employee->load('positions')));
-        // An employee with no mapped position still falls back cleanly.
+        $this->assertSame('POS-22', $resolver->positionId($store, $employee));
+        // An employee with no mapped label still falls back cleanly.
         $this->assertSame('POS-11', $resolver->positionId($store));
     }
 
@@ -217,7 +212,7 @@ class MappingCommandsTest extends TestCase
     {
         $this->artisan('humanity:map-location', ['--store' => '03759-00001', '--location' => 'LOC-77']);
 
-        Position::query()->create(['id' => 10, 'label' => 'Crew Member']);
+        $this->employeeWithLabel(10, 'Crew Member');
 
         // The real account has both a bare label and a store-suffixed one for
         // the same role — the store-scoped one must win, not read as ambiguous.
@@ -233,7 +228,7 @@ class MappingCommandsTest extends TestCase
         $this->artisan('humanity:map-position', ['--auto-map' => true, '--store' => '03759-00001'])
             ->assertExitCode(0);
 
-        $row = HumanityPositionMap::query()->where('position_id', 10)->sole();
+        $row = HumanityPositionMap::query()->where('position_label', 'Crew Member')->sole();
         $this->assertSame('POS-STORE', $row->humanity_position_id);
         $this->assertFalse((bool) $row->is_default);
     }
@@ -242,7 +237,7 @@ class MappingCommandsTest extends TestCase
     {
         $this->artisan('humanity:map-location', ['--store' => '03759-00001', '--location' => 'LOC-77']);
 
-        Position::query()->create(['id' => 10, 'label' => 'Crew Member']);
+        $this->employeeWithLabel(10, 'Crew Member');
 
         HumanityPosition::query()->create([
             'humanity_position_id' => 'POS-A', 'humanity_location_id' => 'LOC-77',
@@ -257,7 +252,7 @@ class MappingCommandsTest extends TestCase
             ->expectsOutputToContain('Ambiguous')
             ->assertExitCode(1);
 
-        $this->assertSame(0, HumanityPositionMap::query()->where('position_id', 10)->count());
+        $this->assertSame(0, HumanityPositionMap::query()->where('position_label', 'Crew Member')->count());
     }
 
     public function test_auto_map_leaves_an_unmatched_position_unmapped(): void
@@ -265,12 +260,12 @@ class MappingCommandsTest extends TestCase
         $this->artisan('humanity:map-location', ['--store' => '03759-00001', '--location' => 'LOC-77']);
 
         // setUp() only seeds a "Kitchen" Humanity position — nothing matches "Manager".
-        Position::query()->create(['id' => 10, 'label' => 'Manager']);
+        $this->employeeWithLabel(10, 'Manager');
 
         $this->artisan('humanity:map-position', ['--auto-map' => true, '--store' => '03759-00001'])
             ->assertExitCode(0);
 
-        $this->assertSame(0, HumanityPositionMap::query()->where('position_id', 10)->count());
+        $this->assertSame(0, HumanityPositionMap::query()->where('position_label', 'Manager')->count());
     }
 
     public function test_auto_map_with_store_option_only_touches_that_store(): void
@@ -281,7 +276,8 @@ class MappingCommandsTest extends TestCase
         $this->humanity->seedLocation('LOC-88', 'Pizza Uptown #2', 'America/Chicago');
         $this->artisan('humanity:map-location', ['--store' => '03759-00002', '--location' => 'LOC-88']);
 
-        Position::query()->create(['id' => 10, 'label' => 'Crew Member']);
+        $this->employeeWithLabel(10, 'Crew Member');
+        $this->employeeWithLabel(11, 'Crew Member', '03759-00002', 2);
         HumanityPosition::query()->create([
             'humanity_position_id' => 'POS-S1', 'humanity_location_id' => 'LOC-77',
             'name' => 'Crew Member - Downtown', 'is_active' => true,
@@ -306,7 +302,8 @@ class MappingCommandsTest extends TestCase
         $this->artisan('humanity:map-location', ['--store' => '03759-00001', '--location' => 'LOC-77'])->assertExitCode(0);
         $this->artisan('humanity:map-location', ['--store' => '03759-00002', '--location' => 'LOC-88'])->assertExitCode(0);
 
-        Position::query()->create(['id' => 10, 'label' => 'Crew Member']);
+        $this->employeeWithLabel(10, 'Crew Member');
+        $this->employeeWithLabel(11, 'Crew Member', '03759-00002', 2);
         HumanityPosition::query()->create([
             'humanity_position_id' => 'POS-S1', 'humanity_location_id' => 'LOC-77',
             'name' => 'Crew Member - Downtown', 'is_active' => true,
@@ -328,7 +325,7 @@ class MappingCommandsTest extends TestCase
     {
         $this->artisan('humanity:map-location', ['--store' => '03759-00001', '--location' => 'LOC-77']);
 
-        Position::query()->create(['id' => 10, 'label' => 'Crew Member']);
+        $this->employeeWithLabel(10, 'Crew Member');
         HumanityPosition::query()->create([
             'humanity_position_id' => 'POS-STORE', 'humanity_location_id' => 'LOC-77',
             'name' => 'Crew Member - Downtown', 'is_active' => true,
@@ -337,14 +334,14 @@ class MappingCommandsTest extends TestCase
         $this->artisan('humanity:map-position', ['--auto-map' => true, '--store' => '03759-00001'])->assertExitCode(0);
         $this->artisan('humanity:map-position', ['--auto-map' => true, '--store' => '03759-00001'])->assertExitCode(0);
 
-        $this->assertSame(1, HumanityPositionMap::query()->where('position_id', 10)->count());
+        $this->assertSame(1, HumanityPositionMap::query()->where('position_label', 'Crew Member')->count());
     }
 
     public function test_auto_map_does_not_overwrite_a_disagreeing_manual_mapping_without_force(): void
     {
         $this->artisan('humanity:map-location', ['--store' => '03759-00001', '--location' => 'LOC-77']);
 
-        Position::query()->create(['id' => 10, 'label' => 'Crew Member']);
+        $this->employeeWithLabel(10, 'Crew Member');
         HumanityPosition::query()->create([
             'humanity_position_id' => 'POS-STORE', 'humanity_location_id' => 'LOC-77',
             'name' => 'Crew Member - Downtown', 'is_active' => true,
@@ -352,19 +349,19 @@ class MappingCommandsTest extends TestCase
 
         // A human previously pointed this position somewhere else on purpose.
         $this->artisan('humanity:map-position', [
-            '--store' => '03759-00001', '--humanity-position' => 'POS-11', '--position' => 10,
+            '--store' => '03759-00001', '--humanity-position' => 'POS-11', '--label' => 'Crew Member',
         ]);
 
         $this->artisan('humanity:map-position', ['--auto-map' => true, '--store' => '03759-00001'])
             ->expectsOutputToContain('already mapped')
             ->assertExitCode(0);
 
-        $this->assertSame('POS-11', HumanityPositionMap::query()->where('position_id', 10)->value('humanity_position_id'));
+        $this->assertSame('POS-11', HumanityPositionMap::query()->where('position_label', 'Crew Member')->value('humanity_position_id'));
 
         $this->artisan('humanity:map-position', ['--auto-map' => true, '--store' => '03759-00001', '--force' => true])
             ->assertExitCode(0);
 
-        $this->assertSame('POS-STORE', HumanityPositionMap::query()->where('position_id', 10)->value('humanity_position_id'));
+        $this->assertSame('POS-STORE', HumanityPositionMap::query()->where('position_label', 'Crew Member')->value('humanity_position_id'));
     }
 
     public function test_auto_map_never_touches_the_default_row(): void
@@ -372,7 +369,7 @@ class MappingCommandsTest extends TestCase
         $this->artisan('humanity:map-location', ['--store' => '03759-00001', '--location' => 'LOC-77']);
         $this->artisan('humanity:map-position', ['--store' => '03759-00001', '--humanity-position' => 'POS-11', '--default' => true]);
 
-        Position::query()->create(['id' => 10, 'label' => 'Crew Member']);
+        $this->employeeWithLabel(10, 'Crew Member');
         HumanityPosition::query()->create([
             'humanity_position_id' => 'POS-STORE', 'humanity_location_id' => 'LOC-77',
             'name' => 'Crew Member - Downtown', 'is_active' => true,
@@ -381,8 +378,35 @@ class MappingCommandsTest extends TestCase
         $this->artisan('humanity:map-position', ['--auto-map' => true, '--store' => '03759-00001'])
             ->assertExitCode(0);
 
-        $default = HumanityPositionMap::query()->whereNull('position_id')->sole();
+        $default = HumanityPositionMap::query()->whereNull('position_label')->sole();
         $this->assertSame('POS-11', $default->humanity_position_id);
         $this->assertTrue((bool) $default->is_default);
+    }
+
+    /** Labels live on employees now, so a mappable label means a roster row. */
+    private function employeeWithLabel(
+        int $id,
+        string $label,
+        string $storeNumber = '03759-00001',
+        int $storeId = 1
+    ): Employee {
+        $employee = Employee::query()->create([
+            'id' => $id,
+            'first_name' => 'Test',
+            'last_name' => "Employee {$id}",
+            'active' => true,
+            'current_status' => 'hired',
+            'position_label' => $label,
+        ]);
+
+        EmployeeStore::query()->create([
+            'employee_id' => $id,
+            'store_number' => $storeNumber,
+            'store_id' => $storeId,
+            'status' => 'hired',
+            'active' => true,
+        ]);
+
+        return $employee;
     }
 }

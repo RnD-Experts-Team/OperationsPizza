@@ -38,7 +38,7 @@ class ClockController extends Controller
             $store,
             $employee,
             $this->momentFrom($validated),
-            $validated['position_id'] ?? null,
+            $validated['position_label'] ?? null,
             $request
         );
 
@@ -89,7 +89,7 @@ class ClockController extends Controller
             $store,
             $employee,
             $this->momentFrom($validated),
-            $validated['position_id'] ?? null,
+            $validated['position_label'] ?? null,
             $request
         );
 
@@ -127,7 +127,7 @@ class ClockController extends Controller
             // Omit to punch now. Supplying a time is for corrections, and TCP
             // applies its own edit rules to those.
             'at' => ['nullable', 'date'],
-            'position_id' => ['nullable', 'integer', 'min:1'],
+            'position_label' => ['nullable', 'string', 'max:190'],
         ]);
     }
 
@@ -139,7 +139,6 @@ class ClockController extends Controller
     private function findEmployee(string $storeNumber, int $employeeId): Employee
     {
         $employee = Employee::query()
-            ->with('positions')
             ->assignedToStore($storeNumber)
             ->find($employeeId);
 

@@ -31,31 +31,26 @@ class HumanityPositionResolver
     }
 
     /**
-     * Resolve by explicit position, else the employee's primary position, else
-     * the store's default row (position_id IS NULL).
+     * Resolve by explicit label, else the employee's own position label, else
+     * the store's default row (position_label IS NULL).
+     *
+     * Keyed on the label TEXT, not a position id: we deliberately do not
+     * replicate HiringPizza's position catalog, and Humanity's own positions
+     * are named by the same store-suffixed convention anyway.
+     *
+     * Local reads only — never calls Humanity.
      */
-    public function positionId(Store $store, ?Employee $employee = null, ?int $positionId = null): string
+    public function positionId(Store $store, ?Employee $employee = null, ?string $label = null): string
     {
-        $candidates = [];
-
-        if ($positionId !== null) {
-            $candidates[] = $positionId;
-        }
-
-        if ($employee !== null) {
-            $employeePositions = $employee->relationLoaded('positions')
-                ? $employee->positions
-                : $employee->positions()->get();
-
-            foreach ($employeePositions->sortByDesc(fn ($p) => (int) $p->pivot->is_primary) as $position) {
-                $candidates[] = (int) $position->id;
-            }
-        }
+        $candidates = array_values(array_filter([
+            $label,
+            $employee?->position_label,
+        ], fn ($value) => filled($value)));
 
         foreach ($candidates as $candidate) {
             $mapped = HumanityPositionMap::query()
                 ->where('store_id', $store->id)
-                ->where('position_id', $candidate)
+                ->where('position_label', $candidate)
                 ->value('humanity_position_id');
 
             if (filled($mapped)) {
@@ -65,14 +60,14 @@ class HumanityPositionResolver
 
         $default = HumanityPositionMap::query()
             ->where('store_id', $store->id)
-            ->whereNull('position_id')
+            ->whereNull('position_label')
             ->value('humanity_position_id');
 
         if (filled($default)) {
             return (string) $default;
         }
 
-        throw SchedulingException::positionNotMapped((string) $store->store_number, $positionId);
+        throw SchedulingException::positionNotMapped((string) $store->store_number, $label);
     }
 
     /** Positions this store can schedule into — the UI's department list. */

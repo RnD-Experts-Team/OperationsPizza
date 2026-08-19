@@ -33,16 +33,15 @@ class EmployeePresenter
         $onDate ??= now()->toDateString();
 
         return $employees->map(function (Employee $employee) use ($departments, $labor, $onDate) {
-            $positions = $employee->relationLoaded('positions') ? $employee->positions : collect();
-            $primary = $positions->sortByDesc(fn ($p) => (int) $p->pivot->is_primary)->first();
+            $label = $employee->position_label;
 
             return [
                 'id' => (string) $employee->id,
                 'name' => trim("{$employee->first_name} {$employee->last_name}"),
                 'first_name' => $employee->first_name,
                 'last_name' => $employee->last_name,
-                'role' => $primary?->label,
-                'department' => $primary ? ($departments[$primary->id] ?? null) : null,
+                'role' => $label,
+                'department' => $label === null ? null : ($departments[$label] ?? null),
                 'avatar' => $this->initials($employee),
                 'color' => $this->color($employee),
                 'is_active' => (bool) $employee->active,
@@ -52,8 +51,6 @@ class EmployeePresenter
                 // badge instead of letting a manager schedule the person.
                 'synced' => $employee->isLinkedToHumanity(),
                 'hourly_rate' => $labor->rateFor((int) $employee->id, $onDate),
-                'email' => $employee->primaryEmail(),
-                'phone' => $employee->primaryPhone(),
             ];
         })->values()->all();
     }
@@ -75,15 +72,15 @@ class EmployeePresenter
     }
 
     /**
-     * Our position → its Humanity position name, which is what the UI calls a
-     * department. Unmapped positions simply have none.
+     * Position label → its Humanity position name, which is what the UI calls
+     * a department. Unmapped labels simply have none.
      */
     public function departmentsByPosition(Store $store): array
     {
         $map = HumanityPositionMap::query()
             ->where('store_id', $store->id)
-            ->whereNotNull('position_id')
-            ->pluck('humanity_position_id', 'position_id');
+            ->whereNotNull('position_label')
+            ->pluck('humanity_position_id', 'position_label');
 
         if ($map->isEmpty()) {
             return [];

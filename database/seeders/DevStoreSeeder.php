@@ -7,7 +7,6 @@ use App\Models\EmployeeStore;
 use App\Models\HumanityLocation;
 use App\Models\HumanityPosition;
 use App\Models\HumanityPositionMap;
-use App\Models\Position;
 use App\Models\Store;
 use App\Models\TcpJobCode;
 use App\Models\TcpLocation;
@@ -46,8 +45,12 @@ class DevStoreSeeder extends Seeder
             ['humanity_location_id' => 'DEVLOC1', 'name' => 'Crew Member', 'is_active' => true]
         );
         HumanityPositionMap::query()->updateOrCreate(
-            ['store_id' => $store->id, 'position_id' => null],
+            ['store_id' => $store->id, 'position_label' => null],
             ['humanity_position_id' => 'DEVPOS1', 'is_default' => true]
+        );
+        HumanityPositionMap::query()->updateOrCreate(
+            ['store_id' => $store->id, 'position_label' => 'Crew Member'],
+            ['humanity_position_id' => 'DEVPOS1', 'is_default' => false]
         );
 
         // TCP side: name-bound location + per-store job codes, as
@@ -73,13 +76,10 @@ class DevStoreSeeder extends Seeder
             );
         }
 
-        $crewMember = Position::query()->updateOrCreate(['id' => 9001], ['label' => 'Crew Member']);
-        $manager = Position::query()->updateOrCreate(['id' => 9003], ['label' => 'Manager']);
-
         foreach ([
-            [9501, 'Ada', 'Lovelace', $crewMember],
-            [9502, 'Grace', 'Hopper', $manager],
-        ] as [$id, $first, $last, $position]) {
+            [9501, 'Ada', 'Lovelace', 'Crew Member'],
+            [9502, 'Grace', 'Hopper', 'Manager'],
+        ] as [$id, $first, $last, $positionLabel]) {
             $employee = Employee::query()->updateOrCreate(
                 ['id' => $id],
                 [
@@ -87,6 +87,8 @@ class DevStoreSeeder extends Seeder
                     'last_name' => $last,
                     'active' => true,
                     'current_status' => 'hired',
+                    'position_label' => $positionLabel,
+                    'hourly_rate' => '16.0000',
                     // Both external links present, in the shapes the real
                     // account uses (TCP-native id; Humanity's own id).
                     'tcp_employee_id' => (string) ($id + 9000000),
@@ -98,10 +100,6 @@ class DevStoreSeeder extends Seeder
                 ['employee_id' => $employee->id, 'store_number' => $store->store_number],
                 ['store_id' => $store->id, 'status' => 'hired', 'active' => true]
             );
-
-            $employee->positions()->syncWithoutDetaching([
-                $position->id => ['is_primary' => true, 'effective_date' => '2026-01-01'],
-            ]);
         }
 
         $this->command?->info('Dev store 03795-99999 ready: 2 employees, Humanity + TCP mappings, clockable job codes.');

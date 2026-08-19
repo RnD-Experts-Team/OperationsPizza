@@ -79,7 +79,7 @@ class InspectTcpEmployeesCommand extends Command
 
         if ($linked < $total) {
             $this->warn('Employees without one cannot clock in, and their worked hours cannot be attributed.');
-            $this->line("They need a '" . \App\Models\EmployeeExternalId::TCP . "' external id recorded in HiringPizza.");
+            $this->line("They need a '" . \App\Models\Employee::TCP_ID_LABEL . "' external id recorded in HiringPizza.");
         }
 
         $this->newLine();
