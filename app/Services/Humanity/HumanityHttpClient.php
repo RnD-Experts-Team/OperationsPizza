@@ -178,11 +178,15 @@ class HumanityHttpClient implements HumanityClientInterface
             'end_time' => $this->dates->time($payload->endsLocal),
             'type' => $payload->open ? 1 : 0,
             'needed' => $payload->slots,
+            // `location` is deliberately NOT sent: it's a remote-location
+            // override, not the shift's real location — that comes from
+            // `schedule` (the position) on Humanity's side. Sending our
+            // locally-cached store location here is what produced
+            // "Location with id 'X' does not exist" regardless of which id
+            // was tried; $payload->locationId is still resolved and kept
+            // locally (humanity_locations, Shift.humanity_location_id) for
+            // reconciliation and listShifts()'s read filter.
         ];
-
-        if ($payload->locationId !== '') {
-            $body['location'] = $payload->locationId;
-        }
 
         if ($payload->title !== null) {
             $body['title'] = $payload->title;
@@ -227,11 +231,9 @@ class HumanityHttpClient implements HumanityClientInterface
             'update_type' => 1,
             'update_notes' => 1,
             'update_schedule' => 1,
+            // See createShift(): `location` is a remote-location override,
+            // not the shift's real location, and must not be sent here either.
         ];
-
-        if ($payload->locationId !== '') {
-            $body['location'] = $payload->locationId;
-        }
 
         $data = $this->put("shifts/{$humanityShiftId}", $body, 'update shift');
 
