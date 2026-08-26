@@ -202,6 +202,43 @@ class BulkAndTemplateTest extends TestCase
         $this->assertCount(0, $this->humanity->shifts);
     }
 
+    public function test_create_shifts_accepts_a_raw_list_by_day_index(): void
+    {
+        $operation = $this->runBulk(
+            app(BulkOperationService::class)->createShifts($this->store, '2026-08-04', [
+                ['employee_id' => 501, 'day_index' => 0, 'start_time' => '09:00', 'end_time' => '17:00', 'label' => 'Morning'],
+                ['employee_id' => 502, 'day_index' => 3, 'start_time' => '16:00', 'end_time' => '22:00', 'label' => 'Evening'],
+            ], 'merge', null)
+        );
+
+        $this->assertSame(ScheduleBulkOperation::STATUS_COMPLETED, $operation->status);
+        $this->assertSame(2, $operation->succeeded_items);
+
+        $created = Shift::query()->whereBetween('shift_date', ['2026-08-04', '2026-08-10'])->get();
+        $this->assertCount(2, $created);
+        // day_index 0/3 from a Tuesday week start -> Tue/Fri.
+        $this->assertContains('2026-08-04', $created->pluck('shift_date')->map->toDateString()->all());
+        $this->assertContains('2026-08-07', $created->pluck('shift_date')->map->toDateString()->all());
+    }
+
+    public function test_create_shifts_in_replace_mode_clears_the_week_first(): void
+    {
+        $this->seedWeek('2026-08-04');
+
+        $operation = $this->runBulk(
+            app(BulkOperationService::class)->createShifts($this->store, '2026-08-04', [
+                ['employee_id' => 501, 'day_index' => 1, 'start_time' => '10:00', 'end_time' => '18:00'],
+            ], 'replace', null)
+        );
+
+        $this->assertSame(ScheduleBulkOperation::STATUS_COMPLETED, $operation->status);
+
+        // The two seeded shifts are gone, only the new one remains.
+        $remaining = Shift::query()->whereBetween('shift_date', ['2026-08-04', '2026-08-10'])->get();
+        $this->assertCount(1, $remaining);
+        $this->assertSame('2026-08-05', $remaining->first()->shift_date->toDateString());
+    }
+
     public function test_a_template_captures_a_week_by_day_index_and_reapplies_it(): void
     {
         $this->seedWeek('2026-08-04');

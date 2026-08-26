@@ -74,6 +74,35 @@ class ScheduleBulkController extends Controller
         return response()->json(['data' => $this->bulk->present($operation)], 202);
     }
 
+    public function createShifts(Request $request, string $storeId): JsonResponse
+    {
+        $store = $this->resolveStore($storeId);
+
+        $validated = $request->validate([
+            'week_start' => ['required', 'date_format:Y-m-d'],
+            'mode' => ['nullable', 'in:replace,merge'],
+            'shifts' => ['required', 'array', 'min:1', 'max:500'],
+            'shifts.*.employee_id' => ['required', 'integer', 'min:1'],
+            'shifts.*.day_index' => ['required', 'integer', 'min:0', 'max:6'],
+            'shifts.*.start_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/'],
+            'shifts.*.end_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/'],
+            'shifts.*.label' => ['nullable', 'string', 'max:120'],
+            'shifts.*.shift_type' => ['nullable', 'in:morning,evening,night,split,custom'],
+            'shifts.*.note' => ['nullable', 'string', 'max:2000'],
+            'shifts.*.position_label' => ['nullable', 'string', 'max:190'],
+        ]);
+
+        $operation = $this->bulk->createShifts(
+            $store,
+            $validated['week_start'],
+            $validated['shifts'],
+            $validated['mode'] ?? 'merge',
+            $request->user()?->id
+        );
+
+        return response()->json(['data' => $this->bulk->present($operation)], 202);
+    }
+
     public function clearWeek(Request $request, string $storeId): JsonResponse
     {
         $store = $this->resolveStore($storeId);

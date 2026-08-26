@@ -171,6 +171,47 @@ class ScheduleApiTest extends TestCase
         $this->assertNotNull($response->json('data.humanity_shift_id'));
     }
 
+    public function test_position_label_override_is_applied_on_create(): void
+    {
+        // Regression: ShiftStoreRequest used to validate the dead `position_id`
+        // (int) field instead of `position_label` (string), so an explicit
+        // override was silently dropped before it ever reached the writer.
+        HumanityPosition::query()->create(['humanity_position_id' => 'POS2', 'humanity_location_id' => 'LOC1', 'name' => 'Cashier']);
+        HumanityPositionMap::query()->create(['store_id' => 1, 'position_label' => 'Cashier', 'humanity_position_id' => 'POS2', 'is_default' => false]);
+
+        $response = $this->postJson('/api/v1/stores/03759-00001/shifts', [
+            'employee_id' => 501,
+            'shift_date' => '2026-08-06',
+            'start_time' => '09:00',
+            'end_time' => '17:00',
+            'position_label' => 'Cashier',
+        ], $this->headers());
+
+        $response->assertCreated();
+
+        $shift = Shift::query()->find($response->json('data.shift_id'));
+        $this->assertSame('POS2', $shift->humanity_position_id);
+    }
+
+    public function test_bulk_create_shifts_queues_and_writes_through(): void
+    {
+        $response = $this->postJson('/api/v1/stores/03759-00001/schedule/bulk/create-shifts', [
+            'week_start' => '2026-08-04',
+            'shifts' => [
+                ['employee_id' => 501, 'day_index' => 0, 'start_time' => '09:00', 'end_time' => '17:00', 'label' => 'Morning'],
+            ],
+        ], $this->headers());
+
+        $response->assertStatus(202);
+        $this->assertSame('queued', $response->json('data.status'));
+        $this->assertSame(1, $response->json('data.total'));
+
+        app(\App\Jobs\ProcessBulkOperationJob::class, ['operationId' => $response->json('data.id')])
+            ->handle(app(\App\Services\Scheduling\ShiftWriteService::class));
+
+        $this->assertSame(1, Shift::query()->whereBetween('shift_date', ['2026-08-04', '2026-08-10'])->count());
+    }
+
     public function test_a_conflicting_shift_returns_409_with_an_actionable_code(): void
     {
         $payload = [

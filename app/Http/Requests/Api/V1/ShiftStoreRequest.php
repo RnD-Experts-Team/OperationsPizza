@@ -24,7 +24,7 @@ class ShiftStoreRequest extends FormRequest
             'label' => ['nullable', 'string', 'max:120'],
             'shift_type' => ['nullable', 'in:morning,evening,night,split,custom'],
             'note' => ['nullable', 'string', 'max:2000'],
-            'position_id' => ['nullable', 'integer', 'min:1'],
+            'position_label' => ['nullable', 'string', 'max:190'],
             'slots' => ['nullable', 'integer', 'min:1', 'max:99'],
             // Overrides conflict/availability guards, not validation.
             'force' => ['nullable', 'boolean'],

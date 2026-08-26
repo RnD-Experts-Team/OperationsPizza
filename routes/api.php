@@ -69,6 +69,7 @@ Route::prefix('v1')->middleware('auth.token.store')->group(function (): void {
         Route::delete('published-schedules/{publishedId}', [PublishedScheduleController::class, 'destroy'])->whereNumber('publishedId')->name('api.v1.published.destroy');
 
         // ---- bulk (always async: 202 + batch id) -----------------------------
+        Route::post('schedule/bulk/create-shifts', [ScheduleBulkController::class, 'createShifts'])->name('api.v1.bulk.create-shifts');
         Route::post('schedule/bulk/copy-week', [ScheduleBulkController::class, 'copyWeek'])->name('api.v1.bulk.copy-week');
         Route::post('schedule/bulk/apply-template', [ScheduleBulkController::class, 'applyTemplate'])->name('api.v1.bulk.apply-template');
         Route::post('schedule/bulk/clear-week', [ScheduleBulkController::class, 'clearWeek'])->name('api.v1.bulk.clear-week');

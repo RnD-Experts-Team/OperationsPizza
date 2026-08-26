@@ -80,6 +80,33 @@ class BulkOperationService
         ]);
     }
 
+    /**
+     * A raw, freeform list of shifts for one week — the one-hit alternative to
+     * looping `POST /shifts` per shift from the frontend. Each item is
+     * day-index relative (0=Tue..6=Mon, matching the grid), not tied to any
+     * existing week or template, unlike copyWeek/applyTemplate above.
+     *
+     * @param  array<int, array{employee_id:int, day_index:int, start_time:string, end_time:string,
+     *                           label?:string, shift_type?:string, note?:string, position_label?:string}>  $shifts
+     */
+    public function createShifts(Store $store, string $weekStart, array $shifts, string $mode, ?int $userId): ScheduleBulkOperation
+    {
+        $target = $this->weeks->normalizeWeekStart($weekStart, $this->weeks->weekStartDow($store->settings()));
+
+        $payloads = array_map(fn (array $shift) => array_filter([
+            'employee_id' => (int) $shift['employee_id'],
+            'shift_date' => $target->addDays((int) $shift['day_index'])->toDateString(),
+            'start_time' => $shift['start_time'],
+            'end_time' => $shift['end_time'],
+            'label' => $shift['label'] ?? null,
+            'shift_type' => $shift['shift_type'] ?? null,
+            'note' => $shift['note'] ?? null,
+            'position_label' => $shift['position_label'] ?? null,
+        ], fn ($value) => $value !== null), $shifts);
+
+        return $this->queue($store, 'bulk_create', $target->toDateString(), $payloads, $mode, $userId);
+    }
+
     public function clearWeek(Store $store, string $week, ?int $userId): ScheduleBulkOperation
     {
         $settings = $store->settings();

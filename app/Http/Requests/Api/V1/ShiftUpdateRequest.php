@@ -21,7 +21,7 @@ class ShiftUpdateRequest extends FormRequest
             'label' => ['sometimes', 'nullable', 'string', 'max:120'],
             'shift_type' => ['sometimes', 'in:morning,evening,night,split,custom'],
             'note' => ['sometimes', 'nullable', 'string', 'max:2000'],
-            'position_id' => ['sometimes', 'nullable', 'integer', 'min:1'],
+            'position_label' => ['sometimes', 'nullable', 'string', 'max:190'],
             'slots' => ['sometimes', 'integer', 'min:1', 'max:99'],
             'force' => ['nullable', 'boolean'],
         ];
