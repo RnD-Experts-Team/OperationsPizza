@@ -39,6 +39,14 @@ class FakeTcpClient implements TcpClientInterface
 
     public bool $pingResult = true;
 
+    /**
+     * CONFIRMED live 2026-08-26: TCP's own POST /punches response never
+     * carries the segment's assigned id — only a later GET /worksegments
+     * does. Default true so the fake matches reality; flip off for a test
+     * that specifically wants the old (unrealistic) id-included shape.
+     */
+    public bool $omitIdOnPunch = true;
+
     private int $nextSegmentId = 5000;
 
     private array $failures = [];
@@ -128,12 +136,37 @@ class FakeTcpClient implements TcpClientInterface
         $result = [];
 
         foreach ($punches as $punch) {
-            $result[] = $this->applyPunch($punch);
+            $segment = $this->applyPunch($punch);
+            $result[] = $this->omitIdOnPunch ? $this->withoutId($segment) : $segment;
         }
 
         $this->calls[] = ['op' => 'punch', 'args' => ['count' => count($punches)]];
 
         return $result;
+    }
+
+    /**
+     * The RESPONSE with its id stripped — what applyPunch() stored in
+     * $this->segments keeps the real id, exactly like real TCP: the id is
+     * discoverable via listWorkSegments(), just not in the punch response.
+     */
+    private function withoutId(TcpWorkSegment $segment): TcpWorkSegment
+    {
+        return new TcpWorkSegment(
+            id: '',
+            employeeId: $segment->employeeId,
+            jobCodeId: $segment->jobCodeId,
+            timeIn: $segment->timeIn,
+            timeOut: $segment->timeOut,
+            actualTimeIn: $segment->actualTimeIn,
+            actualTimeOut: $segment->actualTimeOut,
+            missedInPunch: $segment->missedInPunch,
+            missedOutPunch: $segment->missedOutPunch,
+            breakLength: $segment->breakLength,
+            shiftNotes: $segment->shiftNotes,
+            updatedOn: $segment->updatedOn,
+            raw: $segment->raw,
+        );
     }
 
     private function applyPunch(TcpPunch $punch): TcpWorkSegment

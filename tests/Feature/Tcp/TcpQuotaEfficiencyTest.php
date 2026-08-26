@@ -199,7 +199,7 @@ class TcpQuotaEfficiencyTest extends TestCase
 
     // ------------------------------------------------------------------ punches
 
-    public function test_a_clock_in_then_out_costs_one_request_each(): void
+    public function test_a_clock_out_costs_one_punch_plus_one_id_backfill_lookup(): void
     {
         $employee = Employee::query()->find(501);
         $clock = app(TcpClockService::class);
@@ -211,8 +211,11 @@ class TcpQuotaEfficiencyTest extends TestCase
 
         $clock->clockOut($this->store(), $employee);
 
-        // No lookup: the clock-in response already told us the state.
-        $this->assertSame(0, $this->callsTo('listWorkSegments'));
+        // Not zero: TCP's punch response never carries the segment's real
+        // id (confirmed live 2026-08-26), so one listWorkSegments call is
+        // required to back it — no clock-state check needed here (that part
+        // is still served from cache), only the id backfill.
+        $this->assertSame(1, $this->callsTo('listWorkSegments'));
         $this->assertSame(1, $this->callsTo('punch'));
     }
 
@@ -256,6 +259,9 @@ class TcpQuotaEfficiencyTest extends TestCase
         // and fall back to asking TCP.
         $clock->clockIn($this->store(), $employee, CarbonImmutable::now());
 
-        $this->assertSame(1, $this->callsTo('listWorkSegments'));
+        // Two, not one: the cache-miss state check, plus the id-backfill
+        // lookup every successful punch now costs (TCP's own punch response
+        // never carries the segment's real id).
+        $this->assertSame(2, $this->callsTo('listWorkSegments'));
     }
 }

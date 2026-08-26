@@ -434,12 +434,21 @@ class TcpHttpClient implements TcpClientInterface
                 return null;
             }
 
-            $id = $this->str($row['id'] ?? null);
             $employeeId = $this->str($row['employeeId'] ?? null);
 
-            if ($id === null || $employeeId === null) {
+            if ($employeeId === null) {
                 return null;
             }
+
+            // CONFIRMED live 2026-08-26: a punch's own POST response echoes
+            // what was sent (employeeId, timeIn/timeOut, jobCodeId) but does
+            // NOT carry the segment's assigned id — that only appears on a
+            // later GET /worksegments. Requiring `id` here silently dropped
+            // every successful punch. Empty string, not null, matching how
+            // HumanityHttpClient::toShiftResult() already handles a missing
+            // id elsewhere in this codebase — callers that need the real id
+            // (TcpClockService::send()) fall back to a targeted live lookup.
+            $id = $this->str($row['id'] ?? null) ?? '';
 
             return new TcpWorkSegment(
                 id: $id,

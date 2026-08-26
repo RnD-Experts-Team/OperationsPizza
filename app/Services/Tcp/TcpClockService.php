@@ -13,6 +13,7 @@ use App\Services\Tcp\Exceptions\EmployeeNotInTcpException;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 /**
@@ -209,6 +210,8 @@ class TcpClockService
             throw new Exceptions\TcpException("TCP {$operation} returned no work segment.");
         }
 
+        $segment = $this->backfillSegmentId($segment);
+
         $this->syncLog->succeeded(
             $log,
             $segment->id,
@@ -248,6 +251,45 @@ class TcpClockService
                 'error' => $e->getMessage(),
             ]);
         }
+
+        return $segment;
+    }
+
+    /**
+     * A punch's own POST response never carries the segment's real id —
+     * confirmed live 2026-08-26: it echoes back employeeId/timeIn/timeOut/
+     * jobCodeId only, and the id only appears on a later GET /worksegments.
+     * One targeted read, scoped to this employee and a tight window around
+     * the punch, finds the segment TCP just created/closed so callers have a
+     * real, stable id to log and mirror into actual_shifts against — without
+     * it, every punch would look like a duplicate with no matching row.
+     *
+     * Costs one extra TCP call, every time, on an account shaped like this
+     * one — accepted the same way the punch itself is: interactive traffic
+     * may spend the daily-quota reserve background syncs must leave alone.
+     */
+    private function backfillSegmentId(TcpWorkSegment $segment): TcpWorkSegment
+    {
+        if ($segment->id !== '') {
+            return $segment;
+        }
+
+        $anchor = CarbonImmutable::parse($segment->timeIn ?? $segment->timeOut ?? 'now');
+
+        foreach ($this->tcp->listWorkSegments($anchor->subHour(), $anchor->addHour(), [$segment->employeeId]) as $candidate) {
+            $matchesIn = $segment->timeIn === null || $candidate->timeIn === $segment->timeIn;
+            $matchesOut = $segment->timeOut === null || $candidate->timeOut === $segment->timeOut;
+
+            if ($candidate->employeeId === $segment->employeeId && $matchesIn && $matchesOut) {
+                return $candidate;
+            }
+        }
+
+        Log::warning('Could not backfill a TCP work segment id after a punch', [
+            'employee_id' => $segment->employeeId,
+            'time_in' => $segment->timeIn,
+            'time_out' => $segment->timeOut,
+        ]);
 
         return $segment;
     }

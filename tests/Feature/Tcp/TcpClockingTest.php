@@ -155,6 +155,18 @@ class TcpClockingTest extends TestCase
         $this->assertCount(1, $this->tcp->segments);
     }
 
+    public function test_a_missing_id_on_the_punch_response_is_backfilled_via_a_live_lookup(): void
+    {
+        // CONFIRMED live 2026-08-26: TCP's own punch response never carries
+        // the segment's real id — the fake defaults to this shape. Without
+        // the backfill, this id would be '' and every downstream use
+        // (logging, actual_shifts matching) would be working with a blank.
+        $segment = $this->clock()->clockIn($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 09:00', 'America/Chicago'));
+
+        $this->assertNotSame('', $segment->id);
+        $this->assertTrue($segment->isOpen());
+    }
+
     public function test_clock_out_automatically_mirrors_into_actual_shifts(): void
     {
         $this->clock()->clockIn($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 09:00', 'America/Chicago'));
