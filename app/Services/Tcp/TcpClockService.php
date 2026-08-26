@@ -35,6 +35,7 @@ class TcpClockService
         private readonly TcpJobCodeResolver $jobCodes,
         private readonly StoreTimezoneResolver $timezones,
         private readonly HumanitySyncLogger $syncLog,
+        private readonly TcpWorkSegmentSync $workSegmentSync,
     ) {
     }
 
@@ -46,8 +47,10 @@ class TcpClockService
         $at = $this->resolveMoment($store, $at);
 
         // Refuse locally rather than let TCP reject it: the error is clearer,
-        // and it costs nothing from a very small daily quota.
-        if ($this->isClockedIn($tcpEmployeeId, $at)) {
+        // and it costs nothing from a very small daily quota. But a cached
+        // "clocked in" gets one live re-check before it's trusted enough to
+        // actually block a real clock-in — see isClockedInLive().
+        if ($this->isClockedIn($tcpEmployeeId, $at) && $this->isClockedInLive($tcpEmployeeId, $at)) {
             throw new SchedulingException(
                 trim("{$employee->first_name} {$employee->last_name}") . ' is already clocked in.',
                 'ALREADY_CLOCKED_IN',
@@ -74,7 +77,9 @@ class TcpClockService
         $tcpEmployeeId = $this->requireTcpLink($employee);
         $at = $this->resolveMoment($store, $at);
 
-        if (!$this->isClockedIn($tcpEmployeeId, $at)) {
+        // See clockIn(): a cached "not clocked in" gets one live re-check
+        // before it's trusted enough to actually block a real clock-out.
+        if (!$this->isClockedIn($tcpEmployeeId, $at) && !$this->isClockedInLive($tcpEmployeeId, $at)) {
             throw new SchedulingException(
                 trim("{$employee->first_name} {$employee->last_name}") . ' is not clocked in.',
                 'NOT_CLOCKED_IN',
@@ -225,6 +230,25 @@ class TcpClockService
             (int) config('tcp.open_segment_ttl_seconds', 60)
         );
 
+        // Mirror it into actual_shifts immediately rather than waiting on the
+        // next tcp:sync-worksegments run. No extra TCP call: this is the same
+        // segment TCP's own response just returned. An open segment (e.g.
+        // right after a clock-in) is correctly skipped by the same rule the
+        // bulk sync uses — there's no end time yet to record.
+        try {
+            $this->workSegmentSync->syncOne($store, $employee, $segment);
+        } catch (\Throwable $e) {
+            // TCP already accepted the punch — it is the system of record and
+            // this write already happened there. A failure to mirror it
+            // locally must not turn an already-successful punch into a
+            // failed response; the next scheduled sync will catch it up.
+            Log::warning('Failed to mirror a TCP punch into actual_shifts', [
+                'employee_id' => $employee->id,
+                'tcp_work_segment_id' => $segment->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
         return $segment;
     }
 
@@ -266,6 +290,23 @@ class TcpClockService
             }
         }
 
+        return $this->isClockedInLive($tcpEmployeeId, $at);
+    }
+
+    /**
+     * Always asks TCP directly, ignoring the cache.
+     *
+     * Used both on a cache miss above, and as a confirmation right before
+     * refusing a clock-in/out on a cached belief — see clockIn()/clockOut().
+     * The cache is our own record of what WE did, but the world can change
+     * it underneath us (a punch corrected or deleted directly in TCP's own
+     * UI, for instance), and the trust window is long enough that a stale
+     * "clocked in" can otherwise block a real clock-in for up to 15 minutes
+     * with nothing to self-correct it. Wrongly refusing a punch costs a
+     * shift; the extra call costs one unit of a very small daily quota.
+     */
+    private function isClockedInLive(string $tcpEmployeeId, CarbonImmutable $at): bool
+    {
         foreach ($this->tcp->listWorkSegments($at->subDay(), $at->addDay(), [$tcpEmployeeId]) as $segment) {
             if ($segment->isOpen()) {
                 $this->rememberClockState($tcpEmployeeId, true);

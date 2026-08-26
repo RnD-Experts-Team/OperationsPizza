@@ -159,6 +159,20 @@ class TcpWorkSegmentSync
         return $stats;
     }
 
+    /**
+     * Persist ONE segment immediately — the segment TCP's own punch response
+     * just returned, so this costs no extra TCP call. Same rule as the bulk
+     * sync: an open segment (still on the clock) is correctly skipped until
+     * it closes, so calling this after every punch type is safe — a
+     * clock-in naturally no-ops here and a clock-out is what actually lands.
+     *
+     * @return 'imported'|'updated'|'skipped'
+     */
+    public function syncOne(Store $store, Employee $employee, TcpWorkSegment $segment): string
+    {
+        return $this->upsert($store, $employee, $segment, $this->timezones->for($store));
+    }
+
     /** @return 'imported'|'updated'|'skipped' */
     private function upsert(Store $store, Employee $employee, TcpWorkSegment $segment, string $timezone, bool $dryRun = false): string
     {

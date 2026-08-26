@@ -20,6 +20,7 @@ use App\Services\Tcp\TcpRateLimiter;
 use App\Services\Tcp\TcpWorkSegmentSync;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Tests\TestCase;
 
 class TcpClockingTest extends TestCase
@@ -152,6 +153,34 @@ class TcpClockingTest extends TestCase
         $this->assertSame('2026-08-06T17:00:00', $segment->timeOut);
         // Closing must amend the same segment, not open a second one.
         $this->assertCount(1, $this->tcp->segments);
+    }
+
+    public function test_clock_out_automatically_mirrors_into_actual_shifts(): void
+    {
+        $this->clock()->clockIn($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 09:00', 'America/Chicago'));
+
+        // Still open — nothing to mirror yet, same rule the bulk sync uses.
+        $this->assertSame(0, ActualShift::count());
+
+        $this->clock()->clockOut($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 17:00', 'America/Chicago'));
+
+        $actual = ActualShift::sole();
+        $this->assertSame(501, $actual->employee_id);
+        $this->assertSame('timeclock', $actual->source);
+        $this->assertSame(480, $actual->duration_minutes);
+    }
+
+    public function test_a_stale_cached_clocked_in_state_is_verified_live_before_refusing(): void
+    {
+        // Simulates real-world drift: the cache says "clocked in" (from an
+        // earlier bug, or a change made directly in TCP outside this
+        // system), but TCP genuinely has no open segment. The refusal must
+        // not be trusted blindly — it should self-correct via a live check.
+        Cache::put('tcp:clockstate:501', true, 900);
+
+        $segment = $this->clock()->clockIn($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 09:00', 'America/Chicago'));
+
+        $this->assertTrue($segment->isOpen());
     }
 
     public function test_a_double_clock_in_is_refused_before_calling_tcp(): void
