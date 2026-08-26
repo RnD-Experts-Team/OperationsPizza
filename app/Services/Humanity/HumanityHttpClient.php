@@ -92,10 +92,12 @@ class HumanityHttpClient implements HumanityClientInterface
 
     public function listEmployees(bool $includeInactive = false): array
     {
-        $query = $includeInactive ? ['disabled' => 1, 'inactive' => 1] : [];
-
+        // Confirmed live 2026-08-26: an unfiltered call already returns the
+        // full roster (active + inactive + disabled). Passing disabled=1&
+        // inactive=1 does NOT widen that — it narrows the result to ONLY
+        // disabled/inactive employees, silently dropping every active one.
         return array_values(array_filter(
-            $this->get('employees', $query, 'list employees'),
+            $this->get('employees', [], 'list employees'),
             'is_array'
         ));
     }

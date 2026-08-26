@@ -381,14 +381,22 @@ class ShiftWriteService
     }
 
     /**
-     * The unsynced-employee fork. Nothing is written anywhere: we ask
-     * HiringPizza over NATS and hand the UI a resumable error so the manager's
-     * typed shift survives the wait.
+     * The unsynced-employee fork. Nothing is written anywhere except a
+     * successful live lookup: we ask HiringPizza over NATS and hand the UI a
+     * resumable error so the manager's typed shift survives the wait.
      */
     private function requireHumanityLink(Employee $employee, Store $store, ?Request $request): string
     {
         if ($employee->isLinkedToHumanity()) {
             return (string) $employee->humanity_employee_id;
+        }
+
+        if ($employee->isLinkedToTcp()) {
+            $humanityId = $this->resolveHumanityIdLive($employee);
+
+            if ($humanityId !== null) {
+                return $humanityId;
+            }
         }
 
         $syncRequest = $this->syncRequests->request(
@@ -405,6 +413,48 @@ class ShiftWriteService
         ]);
 
         throw new EmployeeNotSyncedException($employee, $syncRequest, (string) $store->store_number);
+    }
+
+    /**
+     * A single targeted lookup, tried before falling back to the wait loop.
+     *
+     * TCP's connector propagates an employee into Humanity within minutes of
+     * HiringPizza's TCP push, setting the new record's `eid` to the TCP
+     * employee id — confirmed live: the id Humanity shows in its own
+     * links/URLs (what getEmployee/assignEmployees actually need) is
+     * Humanity's OWN id and is NOT the TCP id, but `eid` is a distinct field
+     * that does match it. One read call here turns "wait for tomorrow's
+     * humanity:sync-employees" into "usually resolves on the very next shift
+     * save" — the cron stays as the backstop for whatever this misses, same
+     * as outbox:publish-pending backstops the primary event-dispatch path.
+     */
+    private function resolveHumanityIdLive(Employee $employee): ?string
+    {
+        try {
+            $record = $this->humanity->findEmployeeByEid((string) $employee->tcp_employee_id);
+        } catch (HumanityException $e) {
+            Log::warning('Live Humanity eid lookup failed; falling back to the sync-request wait', [
+                'employee_id' => $employee->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+
+        $humanityId = $record['id'] ?? null;
+
+        if ($humanityId === null || $humanityId === '') {
+            return null;
+        }
+
+        $humanityId = (string) $humanityId;
+
+        $employee->forceFill([
+            'humanity_employee_id' => $humanityId,
+            'humanity_synced_at' => now(),
+        ])->save();
+
+        return $humanityId;
     }
 
     private function recordEvent(string $subject, array $data, ?Request $request): void

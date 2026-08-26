@@ -23,6 +23,10 @@ Schedule::command('humanity:reconcile --force')
 // Read-only: links local employees to Humanity records by TCP id (eid /
 // username prefix). This is how humanity_employee_id appears now that nothing
 // of ours writes Humanity's employee records — TCP's connector owns them.
+// Backstop only: ShiftWriteService::resolveHumanityIdLive() already tries a
+// single targeted eid lookup the moment a shift-write hits an unlinked
+// employee, so most links happen well before this ever runs. This still
+// catches anyone who was never scheduled (so the live path never fired).
 Schedule::command('humanity:sync-employees')
     ->dailyAt('03:30')
     ->withoutOverlapping()

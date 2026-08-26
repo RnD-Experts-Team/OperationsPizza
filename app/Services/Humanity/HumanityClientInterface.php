@@ -42,9 +42,13 @@ interface HumanityClientInterface
     public function getEmployee(string $humanityEmployeeId): ?array;
 
     /**
-     * Look up by the external id we control. Setting eid = our employee id is
-     * what makes the HiringPizza-side upsert idempotent: a retried create finds
-     * the record it already made instead of duplicating the person.
+     * Look up by `eid` — the field TCP's own connector sets to the TCP
+     * employee id when it propagates someone into Humanity (confirmed live:
+     * Humanity's own `id`, the one visible in its links/URLs, is a separate,
+     * Humanity-internal value and does NOT match TCP's id — only `eid` does).
+     * ShiftWriteService::resolveHumanityIdLive() uses this for a single
+     * targeted lookup instead of waiting on the daily humanity:sync-employees
+     * batch job.
      */
     public function findEmployeeByEid(string $eid): ?array;
 
