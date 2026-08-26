@@ -79,7 +79,14 @@ class HumanityHttpClient implements HumanityClientInterface
             return $id === null ? null : [
                 'id' => $id,
                 'name' => (string) ($row['name'] ?? $row['title'] ?? "Position {$id}"),
-                'location_id' => $this->nullableString($row['location'] ?? $row['location_id'] ?? null),
+                // location may arrive as a flat id or as a nested {id, name}
+                // object, depending on the account — handle both rather than
+                // assuming and silently losing it via nullableString(array).
+                'location_id' => $this->nullableString(
+                    is_array($row['location'] ?? null)
+                        ? ($row['location']['id'] ?? null)
+                        : ($row['location'] ?? $row['location_id'] ?? null)
+                ),
                 'is_active' => !$this->truthy($row['deleted'] ?? false),
                 'updated_at' => $this->nullableString($row['updated_at'] ?? null),
                 'color' => $this->nullableString($row['color'] ?? null),
