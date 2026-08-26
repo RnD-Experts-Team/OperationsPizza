@@ -122,7 +122,7 @@ class SyncHumanityCatalogCommand extends Command
 
         $withoutDefault = Store::query()
             ->whereIn('id', HumanityLocation::query()->select('store_id'))
-            ->whereNotIn('id', HumanityPositionMap::query()->whereNull('position_id')->select('store_id'))
+            ->whereNotIn('id', HumanityPositionMap::query()->whereNull('position_label')->select('store_id'))
             ->pluck('store_number');
 
         if ($withoutDefault->isNotEmpty()) {

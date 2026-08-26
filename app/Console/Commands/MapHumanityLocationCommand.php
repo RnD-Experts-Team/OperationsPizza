@@ -273,7 +273,7 @@ class MapHumanityLocationCommand extends Command
     {
         $hasDefault = HumanityPositionMap::query()
             ->where('store_id', $store->id)
-            ->whereNull('position_id')
+            ->whereNull('position_label')
             ->exists();
 
         if (!$hasDefault) {
