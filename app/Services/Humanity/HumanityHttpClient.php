@@ -155,7 +155,7 @@ class HumanityHttpClient implements HumanityClientInterface
 
     public function getShift(string $humanityShiftId): ?HumanityShiftResult
     {
-        $data = $this->get("shifts/{$humanityShiftId}", [], 'get shift', allowMissing: true);
+        $data = $this->get("shifts/{$humanityShiftId}", [], 'get shift', allowMissing: true, singleObject: true);
 
         if ($data === []) {
             return null;
@@ -207,7 +207,7 @@ class HumanityHttpClient implements HumanityClientInterface
 
         // NOTE: POST is never auto-retried (see request()). A timed-out create
         // is resolved by the caller's read-back probe, not by retrying blind.
-        $data = $this->post('shifts', $body, 'create shift');
+        $data = $this->post('shifts', $body, 'create shift', singleObject: true);
 
         return $this->requireShiftResult($data, 'create shift');
     }
@@ -248,7 +248,7 @@ class HumanityHttpClient implements HumanityClientInterface
             $body['notes'] = $payload->note;
         }
 
-        $data = $this->put("shifts/{$humanityShiftId}", $body, 'update shift');
+        $data = $this->put("shifts/{$humanityShiftId}", $body, 'update shift', singleObject: true);
 
         return $this->requireShiftResult($data, 'update shift', $humanityShiftId);
     }
@@ -270,7 +270,7 @@ class HumanityHttpClient implements HumanityClientInterface
             'add' => implode(',', $humanityEmployeeIds),
             'force' => $force ? 1 : 0,
             'update_staff' => 1,
-        ], 'assign employees');
+        ], 'assign employees', singleObject: true);
 
         return $this->requireShiftResult($data, 'assign employees', $humanityShiftId);
     }
@@ -282,7 +282,7 @@ class HumanityHttpClient implements HumanityClientInterface
         $data = $this->put("shifts/{$humanityShiftId}", [
             'remove' => implode(',', $humanityEmployeeIds),
             'update_staff' => 1,
-        ], 'unassign employees');
+        ], 'unassign employees', singleObject: true);
 
         return $this->requireShiftResult($data, 'unassign employees', $humanityShiftId);
     }
@@ -334,23 +334,29 @@ class HumanityHttpClient implements HumanityClientInterface
 
     // ------------------------------------------------------------- HTTP plumbing
 
-    private function get(string $path, array $query, string $context, bool $allowMissing = false): array
+    private function get(string $path, array $query, string $context, bool $allowMissing = false, bool $singleObject = false): array
     {
-        return $this->request('get', $path, $query, $context, $allowMissing);
+        return $this->request('get', $path, $query, $context, $allowMissing, $singleObject);
     }
 
-    private function post(string $path, array $body, string $context): array
+    private function post(string $path, array $body, string $context, bool $singleObject = false): array
     {
-        return $this->request('post', $path, $body, $context);
+        return $this->request('post', $path, $body, $context, singleObject: $singleObject);
     }
 
-    private function put(string $path, array $body, string $context): array
+    private function put(string $path, array $body, string $context, bool $singleObject = false): array
     {
-        return $this->request('put', $path, $body, $context);
+        return $this->request('put', $path, $body, $context, singleObject: $singleObject);
     }
 
-    private function request(string $method, string $path, array $payload, string $context, bool $allowMissing = false): array
-    {
+    private function request(
+        string $method,
+        string $path,
+        array $payload,
+        string $context,
+        bool $allowMissing = false,
+        bool $singleObject = false,
+    ): array {
         $response = $this->send($method, $path, $payload);
 
         // The token may have been revoked mid-flight; re-auth once.
@@ -367,7 +373,24 @@ class HumanityHttpClient implements HumanityClientInterface
 
         $data = $response->data();
 
-        return $this->unwrapCollection($data);
+        // A single shift object carries its OWN `employees` key (its
+        // roster) — unwrapCollection()'s wrapper-key sniffing (meant for
+        // list envelopes like {"shifts":[...]}) matches that key and
+        // silently returns the roster instead of the shift, so toShiftResult()
+        // ends up reading an EMPLOYEE's id as the shift's id. get/create/
+        // update/assign/unassign shift all return one object, never a
+        // named-wrapper list, so they must skip that sniffing entirely.
+        return $singleObject ? $this->singleRow($data) : $this->unwrapCollection($data);
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    private function singleRow(array $data): array
+    {
+        if ($data !== [] && !array_is_list($data)) {
+            return [$data];
+        }
+
+        return $data;
     }
 
     private function send(string $method, string $path, array $payload): HumanityResponse
