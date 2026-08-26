@@ -277,6 +277,31 @@ class ScheduleApiTest extends TestCase
         $this->assertSame(0, Shift::count());
     }
 
+    public function test_a_tcp_linked_employee_waits_on_tcps_connector_without_re_requesting_a_tcp_push(): void
+    {
+        // Already in TCP, just not propagated to Humanity yet (no eid seeded
+        // on the fake client) — this must NOT re-fire tcp_sync_requested,
+        // since that would ask HiringPizza to push someone who's already there.
+        Employee::query()->whereKey(501)->update([
+            'humanity_employee_id' => null,
+            'tcp_employee_id' => '9004321',
+        ]);
+
+        $response = $this->postJson('/api/v1/stores/03759-00001/shifts', [
+            'employee_id' => 501,
+            'shift_date' => '2026-08-06',
+            'start_time' => '09:00',
+            'end_time' => '17:00',
+        ], $this->headers());
+
+        $response->assertStatus(409)
+            ->assertJsonPath('error.code', 'EMPLOYEE_NOT_SYNCED')
+            ->assertJsonPath('error.sync_status', 'awaiting_tcp_connector');
+
+        $this->assertSame(0, \App\Models\EmployeeSyncRequest::query()->count());
+        $this->assertSame(0, \App\Models\OperationsOutboxEvent::query()->count());
+    }
+
     public function test_deleting_a_published_shift_requires_confirmation(): void
     {
         $created = $this->postJson('/api/v1/stores/03759-00001/shifts', [

@@ -397,6 +397,12 @@ class ShiftWriteService
             if ($humanityId !== null) {
                 return $humanityId;
             }
+
+            // Already in TCP — waiting on TCP's own connector to carry them
+            // into Humanity (~5 min), not on anything HiringPizza needs to do.
+            // Firing tcp_sync_requested here would ask for a TCP push that
+            // already happened.
+            throw EmployeeNotSyncedException::awaitingTcpConnector($employee, (string) $store->store_number);
         }
 
         $syncRequest = $this->syncRequests->request(
