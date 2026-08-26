@@ -226,19 +226,30 @@ class HumanityHttpClient implements HumanityClientInterface
             // See createShift(): 0 unless this is an open shift, or Humanity
             // rejects the type/needed combination as contradictory.
             'needed' => $payload->open ? $payload->slots : 0,
-            'title' => $payload->title,
-            'notes' => $payload->note,
 
             // Without these flags Humanity accepts the request, returns
             // status 1, and changes NOTHING. Silently. Always send the ones
             // matching the fields present in the body.
             'update_time' => 1,
             'update_type' => 1,
-            'update_notes' => 1,
             'update_schedule' => 1,
             // See createShift(): `location` is a remote-location override,
             // not the shift's real location, and must not be sent here either.
         ];
+
+        // Conditional, matching createShift(): sending `title`/`notes` as
+        // null (rather than omitting them) is not the same as "leave this
+        // field alone" to Humanity, and update_notes must only be sent
+        // alongside an actual `notes` value or it's a flag for a field that
+        // isn't in the body.
+        if ($payload->title !== null) {
+            $body['title'] = $payload->title;
+        }
+
+        if ($payload->note !== null) {
+            $body['notes'] = $payload->note;
+            $body['update_notes'] = 1;
+        }
 
         $data = $this->put("shifts/{$humanityShiftId}", $body, 'update shift');
 
