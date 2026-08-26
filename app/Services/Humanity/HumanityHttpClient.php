@@ -177,7 +177,10 @@ class HumanityHttpClient implements HumanityClientInterface
             'start_time' => $this->dates->time($payload->startsLocal),
             'end_time' => $this->dates->time($payload->endsLocal),
             'type' => $payload->open ? 1 : 0,
-            'needed' => $payload->slots,
+            // `needed` counts slots still to FILL, not headcount — a Standard
+            // (non-open) shift must carry 0 or Humanity rejects the type/needed
+            // combination as contradictory.
+            'needed' => $payload->open ? $payload->slots : 0,
             // `location` is deliberately NOT sent: it's a remote-location
             // override, not the shift's real location — that comes from
             // `schedule` (the position) on Humanity's side. Sending our
@@ -220,7 +223,9 @@ class HumanityHttpClient implements HumanityClientInterface
             'start_time' => $this->dates->time($payload->startsLocal),
             'end_time' => $this->dates->time($payload->endsLocal),
             'type' => $payload->open ? 1 : 0,
-            'needed' => $payload->slots,
+            // See createShift(): 0 unless this is an open shift, or Humanity
+            // rejects the type/needed combination as contradictory.
+            'needed' => $payload->open ? $payload->slots : 0,
             'title' => $payload->title,
             'notes' => $payload->note,
 
