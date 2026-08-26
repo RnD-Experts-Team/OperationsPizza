@@ -138,9 +138,12 @@ class ReconcileHumanityShiftsCommand extends Command
         $parts = [];
 
         foreach ($diff as $field => $change) {
-            $from = is_scalar($change['from'] ?? null) ? (string) $change['from'] : json_encode($change['from'] ?? null);
-            $to = is_scalar($change['to'] ?? null) ? (string) $change['to'] : json_encode($change['to'] ?? null);
-            $parts[] = "{$field}: {$from} → {$to}";
+            // HumanityShiftReconciler::diff() keys each entry 'local'/'remote',
+            // not 'from'/'to' — reading the wrong keys made every line print
+            // null → null regardless of the actual values compared.
+            $local = is_scalar($change['local'] ?? null) ? (string) $change['local'] : json_encode($change['local'] ?? null);
+            $remote = is_scalar($change['remote'] ?? null) ? (string) $change['remote'] : json_encode($change['remote'] ?? null);
+            $parts[] = "{$field}: {$local} → {$remote}";
         }
 
         return implode(', ', $parts);
