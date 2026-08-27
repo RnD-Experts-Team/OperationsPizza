@@ -23,21 +23,14 @@ Schedule::command('humanity:reconcile --force')
 // Read-only: links local employees to Humanity records by TCP id (eid /
 // username prefix). This is how humanity_employee_id appears now that nothing
 // of ours writes Humanity's employee records — TCP's connector owns them.
-// Backstop only: ShiftWriteService::resolveHumanityIdLive() already tries a
-// single targeted eid lookup the moment a shift-write hits an unlinked
-// employee, so most links happen well before this ever runs. This still
-// catches anyone who was never scheduled (so the live path never fired).
+// Backstop only, and now the third line of defence: SyncEmployeeToHumanityJob
+// fires shortly after a TCP id arrives, and ShiftWriteService retries the same
+// lookup the moment a shift-write hits an unlinked employee. This still catches
+// anyone both of those missed.
 Schedule::command('humanity:sync-employees')
     ->dailyAt('03:30')
     ->withoutOverlapping()
     ->skip(fn () => config('humanity.driver') !== 'http');
-
-// TCP locations + job codes (~6 quota calls). Keeps the store bindings and
-// the clockable-code catalog fresh; new stores surface as unmatched rows.
-Schedule::command('tcp:sync-catalog')
-    ->dailyAt('03:15')
-    ->withoutOverlapping()
-    ->skip(fn () => config('tcp.driver') !== 'http');
 
 // Approved leave is a scheduling guard, so it needs to be fresher than daily.
 Schedule::command('humanity:sync-leave')
@@ -45,12 +38,20 @@ Schedule::command('humanity:sync-leave')
     ->withoutOverlapping()
     ->skip(fn () => config('humanity.driver') !== 'http');
 
-// Locations and positions are the only Humanity resources with a real delta
-// filter, so this is cheap.
-Schedule::command('humanity:sync-catalog')
-    ->dailyAt('03:00')
-    ->withoutOverlapping()
-    ->skip(fn () => config('humanity.driver') !== 'http');
+/*
+ | NOT scheduled, deliberately: `tcp:sync-catalog` and `humanity:sync-catalog`.
+ |
+ | Both mirror catalogs — TCP locations/job codes, Humanity locations/positions
+ | — that only change when a human does something rare and deliberate: opening a
+ | store, defining a job code, adding a position. Neither vendor has a webhook,
+ | so polling was the only way to notice, and a daily poll for an event that
+ | happens a few times a year is noise that also has to be reasoned about every
+ | time the TCP quota is reviewed.
+ |
+ | Run them by hand as part of onboarding instead:
+ |     php artisan tcp:sync-catalog --check
+ |     php artisan humanity:sync-catalog --full --auto-map
+ */
 
 // TCP Manager+ worked hours -> actual_shifts. Incremental via TCP's updatedOn
 // delta filter, so each run costs a handful of calls rather than re-reading the

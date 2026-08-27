@@ -141,8 +141,11 @@ class ShiftWriteServiceTest extends TestCase
         $log = HumanitySyncLog::sole();
         $this->assertSame('succeeded', $log->status);
         $this->assertSame('create', $log->operation);
-        // Written BEFORE the call, which is what makes a timeout recoverable.
-        $this->assertNotNull($log->idempotency_key);
+        $this->assertSame('shift', $log->entity_type);
+        // The row is written BEFORE the call and only then resolved, which is
+        // what makes a timed-out write recoverable — a row still `pending` on
+        // the next attempt is the signal to probe rather than blindly retry.
+        $this->assertNotNull($log->humanity_id);
 
         $event = OperationsOutboxEvent::sole();
         $this->assertSame('operations.v1.shift.created', $event->subject);

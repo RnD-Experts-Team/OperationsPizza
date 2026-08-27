@@ -2,12 +2,14 @@
 
 namespace Tests\Feature\EventConsume;
 
+use App\Jobs\SyncEmployeeToHumanityJob;
 use App\Models\Employee;
 use App\Models\EmployeeSyncRequest;
 use App\Models\Store;
 use App\Services\EventConsume\Handlers\EmployeeCreatedHandler;
 use App\Services\EventConsume\Handlers\EmployeeUpdatedHandler;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
 class EmployeeReplicationTest extends TestCase
@@ -249,10 +251,71 @@ class EmployeeReplicationTest extends TestCase
 
         $this->assertSame('9004321', Employee::find(501)->tcp_employee_id);
         // This is the moment the unsynced-employee loop closes: the request
-        // asked for a TCP push, and the TCP id is what came back. The
-        // Humanity id follows later via the connector + humanity:sync-employees.
+        // asked for a TCP push, and the TCP id is what came back.
         $this->assertSame('fulfilled', EmployeeSyncRequest::sole()->status);
         $this->assertNotNull(EmployeeSyncRequest::sole()->fulfilled_at);
+    }
+
+    public function test_an_arriving_tcp_id_queues_a_delayed_humanity_link(): void
+    {
+        Queue::fake();
+
+        app(EmployeeCreatedHandler::class)->handle($this->createdEvent());
+
+        app(EmployeeUpdatedHandler::class)->handle([
+            'time' => '2026-08-02T12:00:00+00:00',
+            'data' => [
+                'employee_id' => 501,
+                'changed_fields' => [
+                    'ids' => [
+                        'from' => [],
+                        'to' => [['id_value' => '9004321', 'id_type' => ['label' => 'TCP ID']]],
+                    ],
+                ],
+            ],
+        ]);
+
+        // Without this the Humanity id only appears when someone tries to
+        // SCHEDULE them, or when the nightly backstop runs up to a day later.
+        Queue::assertPushed(SyncEmployeeToHumanityJob::class, function ($job) {
+            return $job->employeeId === 501
+                // Delayed: TCP's own connector has to carry them across first.
+                && $job->delay !== null
+                && $job->queue === 'humanity';
+        });
+    }
+
+    public function test_an_unchanged_tcp_id_does_not_requeue_the_humanity_link(): void
+    {
+        app(EmployeeCreatedHandler::class)->handle($this->createdEvent());
+
+        app(EmployeeUpdatedHandler::class)->handle([
+            'time' => '2026-08-02T12:00:00+00:00',
+            'data' => [
+                'employee_id' => 501,
+                'changed_fields' => [
+                    'ids' => ['from' => [], 'to' => [['id_value' => '9004321', 'id_type' => ['label' => 'TCP ID']]]],
+                ],
+            ],
+        ]);
+
+        Queue::fake();
+
+        // A replayed or unrelated update must not spend a Humanity call again.
+        app(EmployeeUpdatedHandler::class)->handle([
+            'time' => '2026-08-02T12:05:00+00:00',
+            'data' => [
+                'employee_id' => 501,
+                'changed_fields' => [
+                    'ids' => [
+                        'from' => [['id_value' => '9004321', 'id_type' => ['label' => 'TCP ID']]],
+                        'to' => [['id_value' => '9004321', 'id_type' => ['label' => 'TCP ID']]],
+                    ],
+                ],
+            ],
+        ]);
+
+        Queue::assertNotPushed(SyncEmployeeToHumanityJob::class);
     }
 
     public function test_an_arriving_humanity_id_alone_does_not_fulfil_a_tcp_sync_request(): void

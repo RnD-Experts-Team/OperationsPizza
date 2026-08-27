@@ -48,6 +48,15 @@ return [
     'requests_per_second' => 3,
     'throttle_backoff_seconds' => 30,
 
+    /*
+     | How long to wait after an employee's TCP id arrives before looking up
+     | their Humanity record. TCP's own connector carries the employee across
+     | on a ~5 minute cycle, so asking immediately would usually just miss.
+     | A miss is harmless — the shift-write lookup and the nightly
+     | humanity:sync-employees both still cover it.
+     */
+    'employee_link_delay_minutes' => 20,
+
     'reconcile' => [
         // OFF by default. The hourly reconcile cron is an explicit opt-in,
         // flipped on only after manual --dry-run diffs have been read clean —

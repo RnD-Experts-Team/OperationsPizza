@@ -4,6 +4,7 @@ namespace Tests\Feature\Tcp;
 
 use App\Models\ActualShift;
 use App\Models\Employee;
+use App\Models\EmployeeClockState;
 use App\Models\EmployeeStore;
 use App\Models\HumanityLocation;
 use App\Models\HumanityPosition;
@@ -466,5 +467,113 @@ class TcpClockingTest extends TestCase
         // A partial sync leaves a misleading picture; skipping is honest.
         $this->assertSame(0, $stats['imported']);
         $this->assertSame(0, ActualShift::count());
+    }
+
+    // ------------------------------------------------ durable clock state
+
+    public function test_a_punch_records_the_clock_state_in_the_database(): void
+    {
+        $this->clock()->clockIn($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 09:00', 'America/Chicago'));
+
+        $state = EmployeeClockState::query()->where('employee_id', 501)->first();
+
+        $this->assertNotNull($state, 'A punch must leave a durable record, not just a cache entry.');
+        $this->assertSame(EmployeeClockState::STATUS_CLOCKED_IN, $state->status);
+        $this->assertTrue($state->isClockedIn());
+        $this->assertSame('501', $state->tcp_employee_id);
+        $this->assertSame(1, (int) $state->store_id);
+        $this->assertNotNull($state->clock_in_at);
+        $this->assertNotNull($state->openSegment());
+    }
+
+    public function test_clocking_out_flips_the_persisted_state(): void
+    {
+        $this->clock()->clockIn($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 09:00', 'America/Chicago'));
+        $this->clock()->clockOut($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 17:00', 'America/Chicago'));
+
+        $state = EmployeeClockState::query()->where('employee_id', 501)->first();
+
+        $this->assertSame(EmployeeClockState::STATUS_CLOCKED_OUT, $state->status);
+        $this->assertFalse($state->isClockedIn());
+        // A closed segment leaves nothing "open" to report.
+        $this->assertNull($state->clock_in_at);
+        $this->assertNull($state->openSegment());
+        // One row per employee, upserted — not an append-only log.
+        $this->assertSame(1, EmployeeClockState::query()->where('employee_id', 501)->count());
+    }
+
+    public function test_a_break_is_distinguishable_from_being_clocked_out(): void
+    {
+        $this->clock()->clockIn($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 09:00', 'America/Chicago'));
+        $this->clock()->breakStart($this->store, $this->employee, 0, CarbonImmutable::parse('2026-08-06 12:00', 'America/Chicago'));
+
+        $state = EmployeeClockState::query()->where('employee_id', 501)->first();
+
+        // TCP closes the segment for a break, so only WE know it was a break.
+        $this->assertSame(EmployeeClockState::STATUS_ON_BREAK, $state->status);
+        $this->assertFalse($state->isClockedIn());
+        $this->assertNotNull($state->break_started_at);
+    }
+
+    public function test_clock_status_survives_a_cache_flush_without_calling_tcp(): void
+    {
+        $this->clock()->clockIn($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 09:00', 'America/Chicago'));
+
+        // The whole point of persisting: losing the cache must not cost a call
+        // against a 2500/day quota to rediscover what we already recorded.
+        Cache::flush();
+
+        $before = count(array_filter($this->tcp->calls, fn ($c) => $c['op'] === 'listWorkSegments'));
+
+        $segment = $this->clock()->currentSegment($this->employee);
+
+        $after = count(array_filter($this->tcp->calls, fn ($c) => $c['op'] === 'listWorkSegments'));
+
+        $this->assertNotNull($segment, 'The durable row should still answer clock-status.');
+        $this->assertTrue($segment->isOpen());
+        $this->assertSame($before, $after, 'A cache flush must be served from the database, not TCP.');
+    }
+
+    public function test_a_stale_persisted_state_is_reverified_against_tcp(): void
+    {
+        $this->clock()->clockIn($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 09:00', 'America/Chicago'));
+
+        Cache::flush();
+
+        // Age the row past the trust window. Persisting state must not make a
+        // stale answer any longer-lived than the cache-only version allowed —
+        // someone can still punch at a physical clock or in TCP's own app.
+        EmployeeClockState::query()->where('employee_id', 501)->update([
+            'last_synced_at' => CarbonImmutable::now()->subSeconds(
+                (int) config('tcp.clock_state_ttl_seconds', 900) + 60
+            ),
+        ]);
+
+        $before = count(array_filter($this->tcp->calls, fn ($c) => $c['op'] === 'listWorkSegments'));
+
+        $this->clock()->currentSegment($this->employee);
+
+        $after = count(array_filter($this->tcp->calls, fn ($c) => $c['op'] === 'listWorkSegments'));
+
+        $this->assertGreaterThan($before, $after, 'A stale row must be re-verified against TCP.');
+    }
+
+    public function test_a_stored_segment_round_trips_intact(): void
+    {
+        $segment = new TcpWorkSegment(
+            id: 'WS9',
+            employeeId: '501',
+            jobCodeId: 'JOB1',
+            timeIn: '2026-08-06T09:00:00',
+            timeOut: null,
+            actualTimeIn: '2026-08-06T08:57:00',
+            missedInPunch: true,
+            breakLength: '30',
+            shiftNotes: ['covered for Ana'],
+        );
+
+        $restored = TcpWorkSegment::fromArray($segment->toArray());
+
+        $this->assertEquals($segment, $restored);
     }
 }

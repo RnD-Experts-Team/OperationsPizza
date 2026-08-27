@@ -2,6 +2,7 @@
 
 namespace App\Services\EventConsume\Handlers\Concerns;
 
+use App\Jobs\SyncEmployeeToHumanityJob;
 use App\Models\Employee;
 use App\Models\EmployeeAvailabilityDay;
 use App\Models\EmployeeStore;
@@ -176,13 +177,21 @@ trait ReplicatesEmployees
         ])->save();
 
         // The link just arrived — this is what closes the loop opened by
-        // operations.v1.employee.tcp_sync_requested. The Humanity id follows
-        // later via TCP's connector + humanity:sync-employees.
+        // operations.v1.employee.tcp_sync_requested.
         if ($tcpId !== null) {
             EmployeeSyncRequest::query()
                 ->where('employee_id', $employee->id)
                 ->where('status', '!=', 'fulfilled')
                 ->update(['status' => 'fulfilled', 'fulfilled_at' => now(), 'last_error' => null]);
+
+            // Go and fetch the Humanity id rather than waiting for someone to
+            // try to schedule them (or for the nightly backstop). Delayed
+            // because TCP's own connector has to carry the employee across
+            // first, and it runs every ~5 minutes; afterCommit so a rolled-back
+            // event replay doesn't queue work for an employee we didn't keep.
+            SyncEmployeeToHumanityJob::dispatch((int) $employee->id)
+                ->delay(now()->addMinutes((int) config('humanity.employee_link_delay_minutes', 20)))
+                ->afterCommit();
         }
     }
 

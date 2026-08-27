@@ -9,8 +9,8 @@ use App\Models\ShiftAssignment;
 use App\Models\Store;
 use App\Services\Humanity\Dto\HumanityShiftPayload;
 use App\Services\Humanity\Dto\HumanityShiftResult;
-use App\Services\Humanity\Exceptions\HumanityException;
 use App\Services\Humanity\HumanityClientInterface;
+use App\Services\Humanity\HumanityEmployeeLinker;
 use App\Services\Humanity\HumanityPositionResolver;
 use App\Services\Humanity\HumanitySyncLogger;
 use App\Services\OperationsEvents\OperationsEventFactory;
@@ -22,7 +22,6 @@ use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Str;
 
 /**
  * The ONLY place a planned shift is written.
@@ -50,6 +49,7 @@ class ShiftWriteService
         private readonly ConflictDetector $conflicts,
         private readonly AvailabilityProjector $availability,
         private readonly EmployeeSyncRequestService $syncRequests,
+        private readonly HumanityEmployeeLinker $employeeLinker,
         private readonly ShiftFingerprint $fingerprint,
         private readonly OperationsEventFactory $events,
         private readonly OperationsOutboxService $outbox,
@@ -98,21 +98,17 @@ class ShiftWriteService
             entityType: 'shift',
             operation: 'create',
             storeId: (int) $store->id,
-            requestPayload: $data,
-            correlationId: $this->correlationId($request),
         );
-
-        $startedAt = microtime(true);
 
         try {
             $result = $this->humanity->createShift($payload);
         } catch (\Throwable $e) {
-            $this->syncLog->failed($log, $e, $this->elapsed($startedAt));
+            $this->syncLog->failed($log, $e);
 
             throw $e;
         }
 
-        $this->syncLog->succeeded($log, $result->shiftId, $result->raw, $this->elapsed($startedAt));
+        $this->syncLog->succeeded($log, $result->shiftId);
 
         return DB::transaction(function () use ($store, $employee, $time, $data, $locationId, $positionId, $result, $humanityEmployeeId, $request) {
             $shift = Shift::query()->create(array_merge($time->toAttributes(), [
@@ -206,11 +202,7 @@ class ShiftWriteService
             entityId: (int) $shift->id,
             storeId: (int) $store->id,
             humanityId: $shift->humanity_shift_id,
-            requestPayload: $data,
-            correlationId: $this->correlationId($request),
         );
-
-        $startedAt = microtime(true);
 
         try {
             $result = $this->humanity->updateShift((string) $shift->humanity_shift_id, $payload);
@@ -229,12 +221,12 @@ class ShiftWriteService
                 );
             }
         } catch (\Throwable $e) {
-            $this->syncLog->failed($log, $e, $this->elapsed($startedAt));
+            $this->syncLog->failed($log, $e);
 
             throw $e;
         }
 
-        $this->syncLog->succeeded($log, $result->shiftId, $result->raw, $this->elapsed($startedAt));
+        $this->syncLog->succeeded($log, $result->shiftId);
 
         return DB::transaction(function () use ($shift, $assignment, $employee, $time, $data, $positionId, $humanityEmployeeId, $store, $request) {
             $shift->update(array_merge($time->toAttributes(), [
@@ -276,17 +268,14 @@ class ShiftWriteService
             entityId: (int) $shift->id,
             storeId: (int) $store->id,
             humanityId: $shift->humanity_shift_id,
-            correlationId: $this->correlationId($request),
         );
-
-        $startedAt = microtime(true);
 
         try {
             if ($shift->humanity_shift_id) {
                 $this->humanity->deleteShift((string) $shift->humanity_shift_id);
             }
         } catch (\Throwable $e) {
-            $this->syncLog->failed($log, $e, $this->elapsed($startedAt));
+            $this->syncLog->failed($log, $e);
 
             // Never soft-delete locally when the remote delete failed: that
             // produces a shift invisible to managers but still live for the
@@ -294,7 +283,7 @@ class ShiftWriteService
             throw $e;
         }
 
-        $this->syncLog->succeeded($log, $shift->humanity_shift_id, [], $this->elapsed($startedAt));
+        $this->syncLog->succeeded($log, $shift->humanity_shift_id);
 
         DB::transaction(function () use ($shift, $store, $request) {
             $shift->assignments()->delete();
@@ -392,7 +381,12 @@ class ShiftWriteService
         }
 
         if ($employee->isLinkedToTcp()) {
-            $humanityId = $this->resolveHumanityIdLive($employee);
+            // One targeted lookup, tried before falling back to the wait loop:
+            // it turns "wait for tomorrow's humanity:sync-employees" into
+            // "usually resolves on the very next shift save". The same lookup
+            // runs proactively from SyncEmployeeToHumanityJob the moment a TCP
+            // id arrives, so by now it has often already succeeded.
+            $humanityId = $this->employeeLinker->link($employee);
 
             if ($humanityId !== null) {
                 return $humanityId;
@@ -421,48 +415,6 @@ class ShiftWriteService
         throw new EmployeeNotSyncedException($employee, $syncRequest, (string) $store->store_number);
     }
 
-    /**
-     * A single targeted lookup, tried before falling back to the wait loop.
-     *
-     * TCP's connector propagates an employee into Humanity within minutes of
-     * HiringPizza's TCP push, setting the new record's `eid` to the TCP
-     * employee id — confirmed live: the id Humanity shows in its own
-     * links/URLs (what getEmployee/assignEmployees actually need) is
-     * Humanity's OWN id and is NOT the TCP id, but `eid` is a distinct field
-     * that does match it. One read call here turns "wait for tomorrow's
-     * humanity:sync-employees" into "usually resolves on the very next shift
-     * save" — the cron stays as the backstop for whatever this misses, same
-     * as outbox:publish-pending backstops the primary event-dispatch path.
-     */
-    private function resolveHumanityIdLive(Employee $employee): ?string
-    {
-        try {
-            $record = $this->humanity->findEmployeeByEid((string) $employee->tcp_employee_id);
-        } catch (HumanityException $e) {
-            Log::warning('Live Humanity eid lookup failed; falling back to the sync-request wait', [
-                'employee_id' => $employee->id,
-                'error' => $e->getMessage(),
-            ]);
-
-            return null;
-        }
-
-        $humanityId = $record['id'] ?? null;
-
-        if ($humanityId === null || $humanityId === '') {
-            return null;
-        }
-
-        $humanityId = (string) $humanityId;
-
-        $employee->forceFill([
-            'humanity_employee_id' => $humanityId,
-            'humanity_synced_at' => now(),
-        ])->save();
-
-        return $humanityId;
-    }
-
     private function recordEvent(string $subject, array $data, ?Request $request): void
     {
         $envelope = $this->events->make($subject, $data, $request);
@@ -471,13 +423,4 @@ class ShiftWriteService
         PublishOutboxEventJob::dispatch($row->id);
     }
 
-    private function correlationId(?Request $request): string
-    {
-        return $request?->headers->get('X-Correlation-Id') ?? (string) Str::ulid();
-    }
-
-    private function elapsed(float $startedAt): int
-    {
-        return (int) round((microtime(true) - $startedAt) * 1000);
-    }
 }

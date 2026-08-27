@@ -46,9 +46,10 @@ interface HumanityClientInterface
      * employee id when it propagates someone into Humanity (confirmed live:
      * Humanity's own `id`, the one visible in its links/URLs, is a separate,
      * Humanity-internal value and does NOT match TCP's id — only `eid` does).
-     * ShiftWriteService::resolveHumanityIdLive() uses this for a single
-     * targeted lookup instead of waiting on the daily humanity:sync-employees
-     * batch job.
+     * HumanityEmployeeLinker uses this for a single targeted lookup instead of
+     * waiting on the daily humanity:sync-employees batch job — proactively
+     * from SyncEmployeeToHumanityJob once a TCP id arrives, and again from
+     * ShiftWriteService if a shift-write still meets an unlinked employee.
      */
     public function findEmployeeByEid(string $eid): ?array;
 

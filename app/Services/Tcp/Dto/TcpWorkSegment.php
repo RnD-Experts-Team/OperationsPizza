@@ -37,6 +37,51 @@ final class TcpWorkSegment
     }
 
     /**
+     * Round-trips through storage (employee_clock_states.open_segment).
+     *
+     * Keyed on this DTO's own property names rather than TCP's wire format, so
+     * a stored segment stays readable if the vendor renames a field — and so
+     * fromArray() is the exact inverse of toArray().
+     */
+    public function toArray(): array
+    {
+        return [
+            'id' => $this->id,
+            'employeeId' => $this->employeeId,
+            'jobCodeId' => $this->jobCodeId,
+            'timeIn' => $this->timeIn,
+            'timeOut' => $this->timeOut,
+            'actualTimeIn' => $this->actualTimeIn,
+            'actualTimeOut' => $this->actualTimeOut,
+            'missedInPunch' => $this->missedInPunch,
+            'missedOutPunch' => $this->missedOutPunch,
+            'breakLength' => $this->breakLength,
+            'shiftNotes' => $this->shiftNotes,
+            'updatedOn' => $this->updatedOn,
+            'raw' => $this->raw,
+        ];
+    }
+
+    public static function fromArray(array $data): self
+    {
+        return new self(
+            id: (string) ($data['id'] ?? ''),
+            employeeId: (string) ($data['employeeId'] ?? ''),
+            jobCodeId: $data['jobCodeId'] ?? null,
+            timeIn: $data['timeIn'] ?? null,
+            timeOut: $data['timeOut'] ?? null,
+            actualTimeIn: $data['actualTimeIn'] ?? null,
+            actualTimeOut: $data['actualTimeOut'] ?? null,
+            missedInPunch: (bool) ($data['missedInPunch'] ?? false),
+            missedOutPunch: (bool) ($data['missedOutPunch'] ?? false),
+            breakLength: $data['breakLength'] ?? null,
+            shiftNotes: (array) ($data['shiftNotes'] ?? []),
+            updatedOn: $data['updatedOn'] ?? null,
+            raw: (array) ($data['raw'] ?? []),
+        );
+    }
+
+    /**
      * A segment TCP itself flags as incomplete. Worth surfacing rather than
      * importing as fact — a missed punch usually means the recorded time is a
      * default, not something the employee actually did.

@@ -3,6 +3,7 @@
 namespace App\Services\Tcp;
 
 use App\Models\Employee;
+use App\Models\EmployeeClockState;
 use App\Models\Store;
 use App\Services\Humanity\HumanitySyncLogger;
 use App\Services\Scheduling\Exceptions\SchedulingException;
@@ -14,7 +15,6 @@ use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Str;
 
 /**
  * Clock in / out / break, against TCP Manager+.
@@ -51,7 +51,7 @@ class TcpClockService
         // and it costs nothing from a very small daily quota. But a cached
         // "clocked in" gets one live re-check before it's trusted enough to
         // actually block a real clock-in — see isClockedInLive().
-        if ($this->isClockedIn($tcpEmployeeId, $at) && $this->isClockedInLive($tcpEmployeeId, $at)) {
+        if ($this->isClockedIn($employee, $tcpEmployeeId, $at) && $this->isClockedInLive($employee, $tcpEmployeeId, $at)) {
             throw new SchedulingException(
                 trim("{$employee->first_name} {$employee->last_name}") . ' is already clocked in.',
                 'ALREADY_CLOCKED_IN',
@@ -80,7 +80,7 @@ class TcpClockService
 
         // See clockIn(): a cached "not clocked in" gets one live re-check
         // before it's trusted enough to actually block a real clock-out.
-        if (!$this->isClockedIn($tcpEmployeeId, $at) && !$this->isClockedInLive($tcpEmployeeId, $at)) {
+        if (!$this->isClockedIn($employee, $tcpEmployeeId, $at) && !$this->isClockedInLive($employee, $tcpEmployeeId, $at)) {
             throw new SchedulingException(
                 trim("{$employee->first_name} {$employee->last_name}") . ' is not clocked in.',
                 'NOT_CLOCKED_IN',
@@ -139,6 +139,10 @@ class TcpClockService
      * poll every few seconds collapses to roughly one TCP call a minute per
      * employee. Any punch we make busts the key (see send()), so the only
      * staleness window is a punch made at a physical clock or in TCP's own app.
+     *
+     * Behind the cache sits the durable row rather than TCP directly, so a
+     * cache flush costs nothing while that row is still inside its trust
+     * window — the same window the cache-only implementation enforced.
      */
     public function currentSegment(Employee $employee): ?TcpWorkSegment
     {
@@ -153,7 +157,22 @@ class TcpClockService
         $cached = Cache::remember(
             $this->openSegmentKey($tcpEmployeeId),
             (int) config('tcp.open_segment_ttl_seconds', 60),
-            function () use ($tcpEmployeeId) {
+            function () use ($employee, $tcpEmployeeId) {
+                $state = $this->clockState($employee);
+
+                if ($state !== null && $state->isFresh()) {
+                    if (!$state->isClockedIn()) {
+                        return [];
+                    }
+
+                    // A state recorded without its segment (a live re-check can
+                    // only answer yes/no) falls through to TCP rather than
+                    // reporting "clocked in" with nothing to show for it.
+                    if (($segment = $state->openSegment()) !== null) {
+                        return [$segment];
+                    }
+                }
+
                 $now = CarbonImmutable::now();
 
                 foreach ($this->tcp->listWorkSegments(
@@ -162,9 +181,13 @@ class TcpClockService
                     [$tcpEmployeeId]
                 ) as $segment) {
                     if ($segment->isOpen()) {
+                        $this->rememberClockState($employee, $tcpEmployeeId, true, segment: $segment);
+
                         return [$segment];
                     }
                 }
+
+                $this->rememberClockState($employee, $tcpEmployeeId, false);
 
                 return [];
             }
@@ -184,16 +207,12 @@ class TcpClockService
             operation: $operation,
             entityId: (int) $employee->id,
             storeId: (int) $store->id,
-            requestPayload: $punch->toPayload(),
-            correlationId: $request?->headers->get('X-Correlation-Id') ?? (string) Str::ulid(),
         );
-
-        $startedAt = microtime(true);
 
         try {
             $segments = $this->tcp->punch([$punch]);
         } catch (\Throwable $e) {
-            $this->syncLog->failed($log, $e, (int) round((microtime(true) - $startedAt) * 1000));
+            $this->syncLog->failed($log, $e);
 
             throw $e;
         }
@@ -203,8 +222,7 @@ class TcpClockService
         if ($segment === null) {
             $this->syncLog->failed(
                 $log,
-                new Exceptions\TcpException("TCP {$operation} returned no work segment."),
-                (int) round((microtime(true) - $startedAt) * 1000)
+                new Exceptions\TcpException("TCP {$operation} returned no work segment.")
             );
 
             throw new Exceptions\TcpException("TCP {$operation} returned no work segment.");
@@ -212,17 +230,21 @@ class TcpClockService
 
         $segment = $this->backfillSegmentId($segment);
 
-        $this->syncLog->succeeded(
-            $log,
-            $segment->id,
-            $segment->raw,
-            (int) round((microtime(true) - $startedAt) * 1000)
-        );
+        $this->syncLog->succeeded($log, $segment->id);
 
         // We know the state exactly now, so record it rather than paying for a
         // lookup on the next punch. isOpen() is the truth from TCP's own
         // response, not an assumption about what the operation should have done.
-        $this->rememberClockState($punch->employeeId, $segment->isOpen());
+        // The operation is passed too, because TCP cannot tell us WHY a segment
+        // is closed — only a break_start knows it was a break.
+        $this->rememberClockState(
+            $employee,
+            $punch->employeeId,
+            $segment->isOpen(),
+            store: $store,
+            segment: $segment,
+            operation: $operation,
+        );
 
         // The segment TCP just returned IS the current one, so seed the read
         // cache with it instead of forcing clock-status to re-fetch. Covers all
@@ -318,21 +340,49 @@ class TcpClockService
      * the state is authoritative for the common case; the cache is only skipped
      * when we have no record, or when the punch is a backdated correction.
      */
-    private function isClockedIn(string $tcpEmployeeId, CarbonImmutable $at): bool
+    private function isClockedIn(Employee $employee, string $tcpEmployeeId, CarbonImmutable $at): bool
     {
         $isCorrection = $at->lessThan(CarbonImmutable::now()->subMinutes(
             (int) config('tcp.clock_state_trust_minutes', 15)
         ));
 
         if (!$isCorrection) {
-            $cached = Cache::get($this->clockStateKey($tcpEmployeeId));
+            $known = $this->knownClockState($employee, $tcpEmployeeId);
 
-            if ($cached !== null) {
-                return (bool) $cached;
+            if ($known !== null) {
+                return $known;
             }
         }
 
-        return $this->isClockedInLive($tcpEmployeeId, $at);
+        return $this->isClockedInLive($employee, $tcpEmployeeId, $at);
+    }
+
+    /**
+     * What we already know, without spending a TCP call — cache, then the
+     * durable row behind it. Null means we genuinely do not know.
+     *
+     * The row has no TTL of its own, so freshness is enforced explicitly:
+     * persisting this state must not make a stale answer any longer-lived than
+     * the cache-only version allowed.
+     */
+    private function knownClockState(Employee $employee, string $tcpEmployeeId): ?bool
+    {
+        $cached = Cache::get($this->clockStateKey($tcpEmployeeId));
+
+        if ($cached !== null) {
+            return (bool) $cached;
+        }
+
+        $state = $this->clockState($employee);
+
+        if ($state !== null && $state->isFresh()) {
+            // Re-seed the cache so the next punch does not touch the DB either.
+            $this->cacheClockState($tcpEmployeeId, $state->isClockedIn());
+
+            return $state->isClockedIn();
+        }
+
+        return null;
     }
 
     /**
@@ -347,35 +397,115 @@ class TcpClockService
      * with nothing to self-correct it. Wrongly refusing a punch costs a
      * shift; the extra call costs one unit of a very small daily quota.
      */
-    private function isClockedInLive(string $tcpEmployeeId, CarbonImmutable $at): bool
+    private function isClockedInLive(Employee $employee, string $tcpEmployeeId, CarbonImmutable $at): bool
     {
         foreach ($this->tcp->listWorkSegments($at->subDay(), $at->addDay(), [$tcpEmployeeId]) as $segment) {
             if ($segment->isOpen()) {
-                $this->rememberClockState($tcpEmployeeId, true);
+                $this->rememberClockState($employee, $tcpEmployeeId, true, segment: $segment);
 
                 return true;
             }
         }
 
-        $this->rememberClockState($tcpEmployeeId, false);
+        $this->rememberClockState($employee, $tcpEmployeeId, false);
 
         return false;
     }
 
     /**
-     * Record what we just did, so the next punch doesn't need a lookup.
+     * Record what we just learned, so the next punch doesn't need a lookup.
      *
-     * Short-lived on purpose: someone can also punch at a physical clock or in
-     * TCP's own app, and a stale "clocked in" would wrongly block them. Expiry
-     * costs one lookup; being wrong costs a shift.
+     * Writes both the cache and the durable row. The cache stays short-lived on
+     * purpose: someone can also punch at a physical clock or in TCP's own app,
+     * and a stale "clocked in" would wrongly block them. Expiry costs one
+     * lookup; being wrong costs a shift.
      */
-    private function rememberClockState(string $tcpEmployeeId, bool $clockedIn): void
+    private function rememberClockState(
+        Employee $employee,
+        string $tcpEmployeeId,
+        bool $clockedIn,
+        ?Store $store = null,
+        ?TcpWorkSegment $segment = null,
+        ?string $operation = null,
+    ): void {
+        $this->cacheClockState($tcpEmployeeId, $clockedIn);
+        $this->persistClockState($employee, $tcpEmployeeId, $clockedIn, $store, $segment, $operation);
+    }
+
+    private function cacheClockState(string $tcpEmployeeId, bool $clockedIn): void
     {
         Cache::put(
             $this->clockStateKey($tcpEmployeeId),
             $clockedIn,
             (int) config('tcp.clock_state_ttl_seconds', 900)
         );
+    }
+
+    /**
+     * The durable half of the clock state.
+     *
+     * Best-effort for exactly the reason the actual_shifts mirror is: TCP has
+     * already accepted the punch and is the system of record, so failing to
+     * record it locally must not turn a successful punch into a failed
+     * response.
+     */
+    private function persistClockState(
+        Employee $employee,
+        string $tcpEmployeeId,
+        bool $clockedIn,
+        ?Store $store,
+        ?TcpWorkSegment $segment,
+        ?string $operation,
+    ): void {
+        try {
+            $existing = $this->clockState($employee);
+
+            $status = match (true) {
+                $clockedIn => EmployeeClockState::STATUS_CLOCKED_IN,
+                $operation === 'break_start' => EmployeeClockState::STATUS_ON_BREAK,
+                // A live re-check only sees "no open segment" — it cannot tell a
+                // break from a finished shift, so it must not overwrite what the
+                // punch itself told us.
+                $operation === null && $existing?->status === EmployeeClockState::STATUS_ON_BREAK
+                    => EmployeeClockState::STATUS_ON_BREAK,
+                default => EmployeeClockState::STATUS_CLOCKED_OUT,
+            };
+
+            $onBreak = $status === EmployeeClockState::STATUS_ON_BREAK;
+
+            EmployeeClockState::query()->updateOrCreate(
+                ['employee_id' => $employee->id],
+                [
+                    // Preserved when a live re-check, which has no store in
+                    // hand, refreshes a state a punch established.
+                    'store_id' => $store?->id ?? $existing?->store_id,
+                    'tcp_employee_id' => $tcpEmployeeId,
+                    'status' => $status,
+                    'tcp_work_segment_id' => $clockedIn ? ($segment?->id ?: null) : null,
+                    'clock_in_at' => $clockedIn
+                        ? ($segment?->timeIn ?? $existing?->clock_in_at ?? CarbonImmutable::now())
+                        : null,
+                    'break_started_at' => $onBreak
+                        ? ($segment?->timeOut ?? $existing?->break_started_at ?? CarbonImmutable::now())
+                        : null,
+                    'open_segment' => $clockedIn ? $segment?->toArray() : null,
+                    'last_synced_at' => CarbonImmutable::now(),
+                ]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('Failed to persist an employee clock state', [
+                'employee_id' => $employee->id,
+                'tcp_employee_id' => $tcpEmployeeId,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private function clockState(Employee $employee): ?EmployeeClockState
+    {
+        return EmployeeClockState::query()
+            ->where('employee_id', $employee->id)
+            ->first();
     }
 
     private function clockStateKey(string $tcpEmployeeId): string
