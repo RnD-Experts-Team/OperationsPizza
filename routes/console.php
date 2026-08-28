@@ -32,6 +32,16 @@ Schedule::command('humanity:sync-employees')
     ->withoutOverlapping()
     ->skip(fn () => config('humanity.driver') !== 'http');
 
+// Shifts a Humanity throttle left owed. Runs often because each shift carries
+// its OWN next-attempt time (min(+6h, next midnight)) — this sweep only picks
+// up what is actually due, and no-ops during a cooldown. Ordered by shift date
+// across all stores, so a throttled publish day drains everyone's Monday
+// before anyone's Tuesday.
+Schedule::command('humanity:sync-pending-shifts')
+    ->everyFiveMinutes()
+    ->withoutOverlapping()
+    ->skip(fn () => config('humanity.driver') !== 'http');
+
 // Approved leave is a scheduling guard, so it needs to be fresher than daily.
 Schedule::command('humanity:sync-leave')
     ->everyThirtyMinutes()

@@ -24,11 +24,19 @@ class ShiftQueryService
     /** @return Collection<int, ShiftAssignment> */
     public function assignmentsForRange(Store $store, string $from, string $to): Collection
     {
+        // Ordered by day, not by insertion. Bulk work derived from this (copy
+        // week, template capture) is written to Humanity in this order, and
+        // when a throttle cuts a run short the schedule must degrade from the
+        // END of the week — losing Sunday is survivable, losing Monday is not.
         return ShiftAssignment::query()
             ->with(['shift', 'employee'])
             ->whereHas('shift', fn ($query) => $query
                 ->forStore((int) $store->id)
                 ->inDateRange($from, $to))
+            ->join('shifts', 'shifts.id', '=', 'shift_assignments.shift_id')
+            ->orderBy('shifts.shift_date')
+            ->orderBy('shifts.start_time')
+            ->select('shift_assignments.*')
             ->get();
     }
 
@@ -71,6 +79,11 @@ class ShiftQueryService
                     'is_recurring' => $shift->recurring_group_id !== null,
                     'recurring_group_id' => $shift->recurring_group_id,
                     'is_published' => (bool) $shift->is_published,
+                    // synced | pending | parked. Anything but `synced` means
+                    // the shift exists here but not yet in Humanity, so staff
+                    // cannot see it — worth surfacing rather than leaving the
+                    // manager to infer it from a null humanity_shift_id.
+                    'sync_status' => $shift->sync_status,
                     'department' => $departmentByPositionId[$shift->humanity_position_id] ?? null,
                     'origin' => $shift->origin,
                     'updated_at' => $shift->updated_at?->toIso8601String(),

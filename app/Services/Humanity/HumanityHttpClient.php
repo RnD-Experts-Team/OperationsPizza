@@ -21,6 +21,7 @@ class HumanityHttpClient implements HumanityClientInterface
     public function __construct(
         private readonly HumanityTokenManager $tokens,
         private readonly HumanityDateFormatter $dates,
+        private readonly HumanityRateLimiter $limiter,
     ) {
     }
 
@@ -397,6 +398,11 @@ class HumanityHttpClient implements HumanityClientInterface
     {
         $url = rtrim((string) config('humanity.base_url'), '/') . '/' . ltrim($path, '/');
 
+        // Every call passes one shared gate. Previously only the bulk job
+        // paced itself, and it did so with a per-process sleep — so a second
+        // worker doubled the real rate against an account-wide limit.
+        $this->limiter->hit();
+
         $request = $this->pendingRequest($method);
 
         $response = $method === 'get' || $method === 'delete'
@@ -405,7 +411,24 @@ class HumanityHttpClient implements HumanityClientInterface
 
         $parsed = HumanityResponse::fromHttp($response);
 
-        if (!$parsed->isSuccess()) {
+        if ($parsed->humanityStatus === HumanityResponse::THROTTLED) {
+            $this->limiter->recordThrottle();
+
+            // The only chance this service gets to learn where Humanity's real
+            // ceiling sits. Humanity documents no limit, no window and no
+            // headers, and a 91 arrives as HTTP 200 with a body code rather
+            // than a 429 — so the trailing call counts, plus whatever headers
+            // and body it did send, are the entire evidence base. Logged in
+            // full and deliberately: this is rare, and cheap when it happens.
+            Log::error('Humanity throttled us (status 91)', [
+                'method' => strtoupper($method),
+                'path' => $path,
+                'calls_in_trailing_minute' => $this->limiter->recentUsage()['minute'],
+                'calls_in_trailing_hour' => $this->limiter->recentUsage()['hour'],
+                'response_headers' => $response->headers(),
+                'response_body' => $response->body(),
+            ]);
+        } elseif (!$parsed->isSuccess()) {
             Log::warning('Humanity call failed', [
                 'method' => strtoupper($method),
                 'path' => $path,

@@ -133,12 +133,19 @@ class ScheduleBulkController extends Controller
 
         $failedCount = $operation->items()->where('status', 'failed')->count();
 
-        if ($failedCount === 0) {
+        // Items left `pending` on a failed operation are unfinished work too —
+        // that is exactly what a throttle-killed run leaves behind. Counting
+        // only `failed` here is what used to make Retry a silent no-op on the
+        // one case that most needed it.
+        $unfinishedCount = $operation->items()->whereIn('status', ['pending', 'processing'])->count();
+
+        if ($failedCount === 0 && $unfinishedCount === 0) {
             return response()->json(['data' => $this->bulk->present($operation)]);
         }
 
-        // Reset only the failures, and roll the counter back by the same amount
-        // so progress stays truthful on the second pass.
+        // Reset the failures, and roll the counter back by the same amount so
+        // progress stays truthful on the second pass. Pending items are
+        // already in the right state and just need a job to pick them up.
         $operation->items()->where('status', 'failed')->update(['status' => 'pending']);
 
         $operation->update([

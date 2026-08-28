@@ -43,10 +43,35 @@ return [
     'retries' => 2,
     'retry_ms' => 250,
 
-    // Self-imposed pacing for bulk fan-out; Humanity's real limit is unpublished
-    // (status 91 = throttled). Backoff seconds honoured when 91 carries no hint.
-    'requests_per_second' => 3,
-    'throttle_backoff_seconds' => 30,
+    /*
+     | Self-imposed pacing, enforced account-wide by HumanityRateLimiter.
+     |
+     | Humanity's real limit is unpublished — status 91 says only "try again
+     | later", with no number, window or headers, and the question has sat
+     | unanswered on their developer forum for years. So this figure is a
+     | guess, and env-tunable precisely because it is: if 91s start appearing
+     | in the logs, lower it without a deploy. 0 disables pacing entirely
+     | (what the test suite does — there is no real API on the other end).
+     */
+    'requests_per_second' => (int) env('HUMANITY_REQUESTS_PER_SECOND', 3),
+
+    // How long the whole account stays paused after a 91. Short on purpose:
+    // being wrong short costs one refused call, being wrong long stalls a
+    // schedule nobody can publish.
+    'throttle_backoff_seconds' => (int) env('HUMANITY_THROTTLE_BACKOFF_SECONDS', 30),
+
+    /*
+     | Retry cadence for a shift a throttle left owed (see
+     | PendingShiftSyncService): wait this many hours, or until the next day
+     | starts, whichever comes first — then give up after max_attempts and park
+     | it for a human.
+     |
+     | Env-tunable because the tradeoff is real and only production can settle
+     | it: a shift is invisible to employees in Humanity until it syncs, so six
+     | hours is cautious. Lower it if the logs show throttles clearing quickly.
+     */
+    'sync_retry_hours' => (int) env('HUMANITY_SYNC_RETRY_HOURS', 6),
+    'sync_max_attempts' => (int) env('HUMANITY_SYNC_MAX_ATTEMPTS', 4),
 
     /*
      | How long to wait after an employee's TCP id arrives before looking up

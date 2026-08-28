@@ -266,6 +266,18 @@ class HumanityShiftReconciler
             return;
         }
 
+        // Owed to Humanity, not missing from it. A throttled write saves the
+        // shift locally and retries for up to a day, so "absent upstream" is
+        // the expected state for that whole window — far longer than the
+        // grace period above. Deleting here would silently destroy a
+        // manager's schedule precisely when the account was too busy to
+        // accept it.
+        if ($localShift->isAwaitingHumanitySync()) {
+            $report->skipped++;
+
+            return;
+        }
+
         $report->deleted++;
 
         $report->changes[] = [

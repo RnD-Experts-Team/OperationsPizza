@@ -9,9 +9,11 @@ use App\Models\ShiftAssignment;
 use App\Models\Store;
 use App\Services\Humanity\Dto\HumanityShiftPayload;
 use App\Services\Humanity\Dto\HumanityShiftResult;
+use App\Services\Humanity\Exceptions\HumanityRateLimitException;
 use App\Services\Humanity\HumanityClientInterface;
 use App\Services\Humanity\HumanityEmployeeLinker;
 use App\Services\Humanity\HumanityPositionResolver;
+use App\Services\Humanity\PendingShiftSyncService;
 use App\Services\Humanity\HumanitySyncLogger;
 use App\Services\OperationsEvents\OperationsEventFactory;
 use App\Services\OperationsEvents\OperationsOutboxService;
@@ -50,6 +52,7 @@ class ShiftWriteService
         private readonly AvailabilityProjector $availability,
         private readonly EmployeeSyncRequestService $syncRequests,
         private readonly HumanityEmployeeLinker $employeeLinker,
+        private readonly PendingShiftSyncService $pendingSync,
         private readonly ShiftFingerprint $fingerprint,
         private readonly OperationsEventFactory $events,
         private readonly OperationsOutboxService $outbox,
@@ -100,22 +103,34 @@ class ShiftWriteService
             storeId: (int) $store->id,
         );
 
+        $result = null;
+        $throttle = null;
+
         try {
             $result = $this->humanity->createShift($payload);
+        } catch (HumanityRateLimitException $e) {
+            // The ONLY failure that still produces a local shift. A throttle is
+            // not the manager's mistake and redoing it changes nothing, so the
+            // schedule is saved and owed to Humanity instead of lost. Every
+            // other error below still rejects the write outright.
+            $this->syncLog->failed($log, $e);
+            $throttle = $e;
         } catch (\Throwable $e) {
             $this->syncLog->failed($log, $e);
 
             throw $e;
         }
 
-        $this->syncLog->succeeded($log, $result->shiftId);
+        if ($throttle === null) {
+            $this->syncLog->succeeded($log, $result->shiftId);
+        }
 
-        return DB::transaction(function () use ($store, $employee, $time, $data, $locationId, $positionId, $result, $humanityEmployeeId, $request) {
+        return DB::transaction(function () use ($store, $employee, $time, $data, $locationId, $positionId, $result, $throttle, $humanityEmployeeId, $request) {
             $shift = Shift::query()->create(array_merge($time->toAttributes(), [
                 'store_id' => $store->id,
                 'humanity_location_id' => $locationId,
                 'humanity_position_id' => $positionId,
-                'humanity_shift_id' => $result->shiftId,
+                'humanity_shift_id' => $result?->shiftId,
                 'label' => $data['label'] ?? null,
                 'shift_type' => $data['shift_type'] ?? 'custom',
                 'note' => $data['note'] ?? null,
@@ -124,6 +139,7 @@ class ShiftWriteService
                 'origin' => Shift::ORIGIN_OPERATIONS,
                 'recurring_group_id' => $data['recurring_group_id'] ?? null,
                 'created_by_user_id' => $request?->user()?->id,
+                'sync_status' => $throttle === null ? Shift::SYNC_SYNCED : Shift::SYNC_PENDING,
             ]));
 
             $shift->assignments()->create([
@@ -132,13 +148,20 @@ class ShiftWriteService
                 'status' => 'assigned',
             ]);
 
+            if ($throttle !== null) {
+                // Sets the retry clock. Done after the assignment exists, so
+                // the sweep rebuilding the payload from this row finds its
+                // staffing.
+                $this->pendingSync->markPending($shift, $throttle);
+            }
+
             $shift->update([
                 'humanity_hash' => $this->fingerprint->forLocalShift($shift->fresh(), [$humanityEmployeeId]),
             ]);
 
             $this->recordEvent('operations.v1.shift.created', [
                 'shift_id' => $shift->id,
-                'humanity_shift_id' => $result->shiftId,
+                'humanity_shift_id' => $result?->shiftId,
                 'store_number' => $store->store_number,
                 'employee_id' => $employee->id,
                 'shift_date' => $time->shiftDate,
@@ -204,6 +227,8 @@ class ShiftWriteService
             humanityId: $shift->humanity_shift_id,
         );
 
+        $throttle = null;
+
         try {
             $result = $this->humanity->updateShift((string) $shift->humanity_shift_id, $payload);
 
@@ -220,15 +245,23 @@ class ShiftWriteService
                     (bool) ($data['force'] ?? false)
                 );
             }
+        } catch (HumanityRateLimitException $e) {
+            // As in create(): the edit is kept locally and owed to Humanity.
+            // The sweep rebuilds the payload from the row, so it pushes this
+            // edit — not a stale one — whenever the account frees up.
+            $this->syncLog->failed($log, $e);
+            $throttle = $e;
         } catch (\Throwable $e) {
             $this->syncLog->failed($log, $e);
 
             throw $e;
         }
 
-        $this->syncLog->succeeded($log, $result->shiftId);
+        if ($throttle === null) {
+            $this->syncLog->succeeded($log, $result->shiftId);
+        }
 
-        return DB::transaction(function () use ($shift, $assignment, $employee, $time, $data, $positionId, $humanityEmployeeId, $store, $request) {
+        return DB::transaction(function () use ($shift, $assignment, $employee, $time, $data, $positionId, $throttle, $humanityEmployeeId, $store, $request) {
             $shift->update(array_merge($time->toAttributes(), [
                 'humanity_position_id' => $positionId,
                 'label' => $data['label'] ?? $shift->label,
@@ -241,6 +274,10 @@ class ShiftWriteService
                 'employee_id' => $employee->id,
                 'humanity_employee_id' => $humanityEmployeeId,
             ]);
+
+            if ($throttle !== null) {
+                $this->pendingSync->markPending($shift, $throttle);
+            }
 
             $shift->update([
                 'humanity_hash' => $this->fingerprint->forLocalShift($shift->fresh(), [$humanityEmployeeId]),
@@ -270,10 +307,19 @@ class ShiftWriteService
             humanityId: $shift->humanity_shift_id,
         );
 
+        $throttle = null;
+
         try {
             if ($shift->humanity_shift_id) {
                 $this->humanity->deleteShift((string) $shift->humanity_shift_id);
             }
+        } catch (HumanityRateLimitException $e) {
+            // The one exception to the rule below. The shift IS soft-deleted
+            // locally and marked owed, so the manager's removal sticks and the
+            // sweep completes it upstream. The divergence is bounded and
+            // tracked, unlike the silent kind the rethrow below prevents.
+            $this->syncLog->failed($log, $e);
+            $throttle = $e;
         } catch (\Throwable $e) {
             $this->syncLog->failed($log, $e);
 
@@ -283,10 +329,20 @@ class ShiftWriteService
             throw $e;
         }
 
-        $this->syncLog->succeeded($log, $shift->humanity_shift_id);
+        if ($throttle === null) {
+            $this->syncLog->succeeded($log, $shift->humanity_shift_id);
+        }
 
-        DB::transaction(function () use ($shift, $store, $request) {
+        DB::transaction(function () use ($shift, $store, $throttle, $request) {
             $shift->assignments()->delete();
+
+            if ($throttle !== null) {
+                // Recorded BEFORE the soft delete: markPending saves the row,
+                // and saving a trashed model would otherwise resurrect nothing
+                // but confuse the ordering of deleted_at against sync state.
+                $this->pendingSync->markPending($shift, $throttle);
+            }
+
             $shift->delete();
 
             $this->recordEvent('operations.v1.shift.deleted', [

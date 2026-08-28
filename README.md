@@ -43,7 +43,7 @@ employees:  HiringPizza ──► TCP Manager+ ──(TCP connector, ~5 min)─�
 | The week starts **Tuesday** | `store_schedule_settings.week_start_dow`, not a constant. Shifts store an absolute date; `day_index` is computed per request and never persisted (the sole exception is `schedule_template_shifts`, which is week-relative by nature). |
 | The scheduling timezone comes from **Humanity**, not from `stores` | `StoreTimezoneResolver` reads it off the mapped Humanity location. Humanity has no per-request timezone and interprets every date and `HH:MM` we send in its location's local time, so a second local copy could only ever drift from the value that actually decides what a shift means. Falls back to `OPERATIONS_DEFAULT_TIMEZONE` for an unmapped store. |
 | `users` and `stores` hold **identity only** | No `is_active`, no roles, no verification state. pizzasys owns all of that and is consulted on every request, so a mirrored copy would go stale and disagree. The local rows exist so `created_by_user_id` can name a human and so shifts can be store-scoped. |
-| Bulk work is always async | A copy-week is ~70 Humanity calls against an undocumented rate limit. |
+| Bulk work is always async, **one day per run** | A copy-week is ~70 Humanity calls against an undocumented, account-wide rate limit. Each run processes a single day then re-queues itself, so with 38 stores publishing at once every store gains Monday before any store gains Tuesday. A throttle then costs everyone their last days instead of costing late stores their whole week. |
 | Bulk work never rolls back | Deleting shifts we already created to "undo" is worse than a partial week, especially once employees have seen it. Failures surface per item with Retry Failed. |
 
 ## The Humanity API, in one screen
@@ -70,7 +70,15 @@ is a different company entirely.
   no `/shifts/{id}/employees` sub-resource — and a `PUT` **silently does nothing**
   without the matching `update_*` flag.
 - **Rate limits are real but unpublished.** Status 91 fires reliably on bulk
-  shift creation.
+  shift creation. There is no documented number, window or reset — the question
+  has sat unanswered on Humanity's own developer forum for years — and it
+  appears to be account-wide, so every store shares one budget. Treated as
+  something to survive rather than predict: `HumanityRateLimiter` paces and
+  pauses every call through one shared gate, a throttle saves the shift locally
+  and `humanity:sync-pending-shifts` carries it over later, and each 91 is
+  logged with the trailing call counts plus the response headers and body,
+  because that is the only way this service will ever learn where the real
+  ceiling sits.
 
 ## Setup
 

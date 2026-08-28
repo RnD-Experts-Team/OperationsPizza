@@ -94,12 +94,32 @@ class BulkAndTemplateTest extends TestCase
         ]);
     }
 
+    /**
+     * Drain the operation the way a queue worker would.
+     *
+     * The job processes ONE day per run and re-dispatches itself for the next,
+     * so a single handle() call no longer finishes a week. Tests dispatch onto
+     * the null queue, so the yield is invisible here — loop until the
+     * operation reports itself finished instead.
+     */
     private function runBulk(ScheduleBulkOperation $operation): ScheduleBulkOperation
     {
-        app(ProcessBulkOperationJob::class, ['operationId' => $operation->id])
-            ->handle(app(ShiftWriteService::class));
+        // One slice per day of the week, plus headroom for a dateless slice.
+        for ($slice = 0; $slice < 10; $slice++) {
+            app(ProcessBulkOperationJob::class, ['operationId' => $operation->id])
+                ->handle(app(ShiftWriteService::class));
 
-        return $operation->fresh();
+            $operation = $operation->fresh();
+
+            if (!in_array($operation->status, [
+                ScheduleBulkOperation::STATUS_QUEUED,
+                ScheduleBulkOperation::STATUS_PROCESSING,
+            ], true)) {
+                break;
+            }
+        }
+
+        return $operation;
     }
 
     public function test_copy_week_recreates_every_shift_on_the_target_week(): void

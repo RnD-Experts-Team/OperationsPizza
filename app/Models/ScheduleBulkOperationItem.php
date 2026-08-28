@@ -8,11 +8,15 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class ScheduleBulkOperationItem extends Model
 {
     protected $fillable = [
-        'bulk_operation_id', 'sequence', 'action', 'status', 'employee_id',
-        'shift_id', 'payload', 'error_code', 'error_message', 'attempts',
+        'bulk_operation_id', 'sequence', 'action', 'shift_date', 'status',
+        'employee_id', 'shift_id', 'payload', 'error_code', 'error_message',
+        'attempts',
     ];
 
-    protected $casts = ['payload' => 'array'];
+    protected $casts = [
+        'payload' => 'array',
+        'shift_date' => 'date',
+    ];
 
     public function operation(): BelongsTo
     {
