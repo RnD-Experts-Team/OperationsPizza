@@ -49,7 +49,10 @@ Route::prefix('v1')->middleware('auth.token.store')->group(function (): void {
         // ---- availability & time off ----------------------------------------
         Route::get('availability', [AvailabilityController::class, 'index'])->name('api.v1.availability.index');
         Route::post('availability-overrides', [AvailabilityController::class, 'store'])->name('api.v1.availability.store');
-        Route::delete('availability-overrides/{overrideId}', [AvailabilityController::class, 'destroy'])->whereNumber('overrideId')->name('api.v1.availability.destroy');
+        // Accepts a raw numeric id or the "override-{id}-{dayIndex}" display id
+        // the week grid hands back verbatim from the availability projection.
+        Route::delete('availability-overrides/{overrideId}', [AvailabilityController::class, 'destroy'])
+            ->where('overrideId', '\d+|override-\d+-\d+')->name('api.v1.availability.destroy');
 
         Route::get('time-off', [TimeOffController::class, 'index'])->name('api.v1.time-off.index');
         Route::post('time-off', [TimeOffController::class, 'store'])->name('api.v1.time-off.store');

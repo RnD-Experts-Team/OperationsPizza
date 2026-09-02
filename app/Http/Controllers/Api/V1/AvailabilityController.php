@@ -71,13 +71,15 @@ class AvailabilityController extends Controller
         return response()->json(['data' => $override], 201);
     }
 
-    public function destroy(string $storeId, int $overrideId): JsonResponse
+    public function destroy(string $storeId, string $overrideId): JsonResponse
     {
         $store = $this->resolveStore($storeId);
 
-        $override = ScheduleAvailabilityOverride::query()
+        $id = $this->parseOverrideId($overrideId);
+
+        $override = $id === null ? null : ScheduleAvailabilityOverride::query()
             ->where('store_id', $store->id)
-            ->find($overrideId);
+            ->find($id);
 
         if ($override === null) {
             throw new NotFoundHttpException("Availability override {$overrideId} not found.");
@@ -86,5 +88,23 @@ class AvailabilityController extends Controller
         $override->delete();
 
         return response()->json(null, 204);
+    }
+
+    /**
+     * The week grid displays overrides using the projector's composite id
+     * (e.g. "override-42-3") and hands that same string back on delete,
+     * rather than the bare database id — so both forms have to resolve here.
+     */
+    private function parseOverrideId(string $overrideId): ?int
+    {
+        if (ctype_digit($overrideId)) {
+            return (int) $overrideId;
+        }
+
+        if (preg_match('/^override-(\d+)-\d+$/', $overrideId, $matches) === 1) {
+            return (int) $matches[1];
+        }
+
+        return null;
     }
 }

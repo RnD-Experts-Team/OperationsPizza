@@ -348,4 +348,49 @@ class ScheduleApiTest extends TestCase
             ->assertJsonPath('data.synced', true)
             ->assertJsonPath('data.humanity_employee_id', '88213');
     }
+
+    public function test_an_availability_override_can_be_deleted_by_its_raw_id(): void
+    {
+        $override = \App\Models\ScheduleAvailabilityOverride::query()->create([
+            'store_id' => 1,
+            'employee_id' => 501,
+            'scope' => 'weekly',
+            'day_of_week' => 2,
+            'all_day' => true,
+        ]);
+
+        $this->deleteJson("/api/v1/stores/03759-00001/availability-overrides/{$override->id}", [], $this->headers())
+            ->assertNoContent();
+
+        $this->assertSoftDeleted($override);
+    }
+
+    public function test_an_availability_override_can_be_deleted_by_the_week_grids_composite_id(): void
+    {
+        // The week grid's availability projection labels each override
+        // "override-{id}-{dayIndex}" and echoes that id back verbatim when
+        // the manager removes it — the route must resolve it too, not just
+        // the bare database id.
+        $override = \App\Models\ScheduleAvailabilityOverride::query()->create([
+            'store_id' => 1,
+            'employee_id' => 501,
+            'scope' => 'weekly',
+            'day_of_week' => 2,
+            'all_day' => true,
+        ]);
+
+        $this->deleteJson(
+            "/api/v1/stores/03759-00001/availability-overrides/override-{$override->id}-3",
+            [],
+            $this->headers()
+        )->assertNoContent();
+
+        $this->assertSoftDeleted($override);
+    }
+
+    public function test_an_unresolvable_override_id_is_a_clean_404(): void
+    {
+        $this->deleteJson('/api/v1/stores/03759-00001/availability-overrides/not-an-id', [], $this->headers())
+            ->assertNotFound();
+    }
 }
