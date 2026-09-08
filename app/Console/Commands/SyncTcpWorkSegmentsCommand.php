@@ -4,7 +4,8 @@ namespace App\Console\Commands;
 
 use App\Models\HumanityLocation;
 use App\Models\Store;
-use App\Services\Tcp\TcpClientInterface;
+use App\Services\Tcp\Exceptions\TcpAuthException;
+use App\Services\Tcp\Exceptions\TcpRateLimitException;
 use App\Services\Tcp\TcpRateLimiter;
 use App\Services\Tcp\TcpWorkSegmentSync;
 use Carbon\CarbonImmutable;
@@ -29,14 +30,13 @@ class SyncTcpWorkSegmentsCommand extends Command
 
     protected $description = 'Sync worked segments from TCP Manager+ into actual_shifts';
 
-    public function handle(TcpWorkSegmentSync $sync, TcpRateLimiter $limiter, TcpClientInterface $tcp): int
+    public function handle(TcpWorkSegmentSync $sync, TcpRateLimiter $limiter): int
     {
-        if (config('tcp.driver') === 'http' && !$tcp->ping()) {
-            $this->error('TCP is not reachable — check TCP_CLIENT_ID / TCP_CLIENT_SECRET / TCP_API_KEY.');
-
-            return self::FAILURE;
-        }
-
+        // No ping. It cost one call on EVERY run to answer a question the next
+        // call answers for free, which at a ten-minute schedule is ~144/day out
+        // of 2500 spent on nothing. Bad credentials are caught by the abort
+        // below instead — which is also strictly cheaper than the ping was in
+        // the failure case, where the old code still let all 38 stores try.
         $stores = Store::query()
             ->when($this->option('store'), fn ($q, $storeNumber) => $q->where('store_number', $storeNumber))
             ->get();
@@ -83,6 +83,22 @@ class SyncTcpWorkSegmentsCommand extends Command
                     $stats['skipped'],
                     $stats['unlinked'],
                 ];
+            } catch (TcpAuthException $e) {
+                // Credentials, not this store. Every remaining store would fail
+                // the same way, so stop rather than spend 37 more calls proving
+                // it — the quota is small enough that a bad deploy could burn a
+                // meaningful part of the day's budget on identical failures.
+                $this->error("  {$store->store_number}: {$e->getMessage()}");
+                $this->error('Aborting: TCP rejected our credentials — check TCP_CLIENT_ID / TCP_CLIENT_SECRET / TCP_API_KEY.');
+
+                return self::FAILURE;
+            } catch (TcpRateLimitException $e) {
+                // Same reasoning: the budget is account-wide, so it is spent
+                // for every store, not just this one.
+                $this->error("  {$store->store_number}: {$e->getMessage()}");
+                $this->warn('Aborting: the remaining stores would only collect the same refusal.');
+
+                return self::FAILURE;
             } catch (\Throwable $e) {
                 $this->error("  {$store->store_number}: {$e->getMessage()}");
                 $rows[] = [$store->store_number, '—', '—', '—', '—', '—'];

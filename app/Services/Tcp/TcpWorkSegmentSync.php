@@ -217,7 +217,16 @@ class TcpWorkSegmentSync
             'ends_at_utc' => $endsUtc->toDateTimeString(),
             'duration_minutes' => $durationMinutes,
             'crosses_midnight' => $endsLocal->toDateString() !== $startsLocal->toDateString(),
-            'status' => $this->deriveStatus($assignment, $startsLocal, $endsLocal),
+            // DERIVED, so this recomputes it freely — it is a function of the
+            // segment and the plan, and nothing is lost by redoing it.
+            //
+            // `review_state` is pointedly absent: it is a human's verdict, and
+            // a background job has no business overwriting one. That is why an
+            // hourly sync used to be able to turn a manager's amendment back
+            // into "worked as planned". New rows take the column default,
+            // `unreviewed`, which is the honest description of a punch nobody
+            // has looked at yet.
+            'time_variance' => $this->deriveVariance($assignment, $startsLocal, $endsLocal),
             'note' => $segment->note(),
             'source' => 'timeclock',
             'tcp_work_segment_id' => $segment->id,
@@ -268,13 +277,16 @@ class TcpWorkSegmentSync
     }
 
     /**
-     * Status is derived, never asserted — the same rule as manual review, so
-     * the two paths cannot disagree.
+     * How the punched segment compares to the plan.
+     *
+     * Same rule as the review path's own derivation, so the two cannot
+     * disagree — a segment carries no label of its own, so an unlabelled
+     * comparison here is the whole comparison, not half of one.
      */
-    private function deriveStatus(?ShiftAssignment $assignment, CarbonImmutable $startsLocal, CarbonImmutable $endsLocal): string
+    private function deriveVariance(?ShiftAssignment $assignment, CarbonImmutable $startsLocal, CarbonImmutable $endsLocal): string
     {
         if ($assignment?->shift === null) {
-            return ActualShift::STATUS_ADDED;
+            return ActualShift::VARIANCE_UNPLANNED;
         }
 
         $shift = $assignment->shift;
@@ -282,7 +294,7 @@ class TcpWorkSegmentSync
         $sameTimes = substr((string) $shift->start_time, 0, 5) === $startsLocal->format('H:i')
             && substr((string) $shift->end_time, 0, 5) === $endsLocal->format('H:i');
 
-        return $sameTimes ? ActualShift::STATUS_CONFIRMED : ActualShift::STATUS_MODIFIED;
+        return $sameTimes ? ActualShift::VARIANCE_MATCHES : ActualShift::VARIANCE_DIFFERS;
     }
 
     /**
@@ -304,12 +316,20 @@ class TcpWorkSegmentSync
             return null;
         }
 
-        $cacheKey = self::CHANGES_KEY . ':' . $since->format('YmdHi');
+        // Floor to a bucket so every store in a run shares one key — and one
+        // call. Each store's cursor sits on a slightly different minute, which
+        // otherwise split the account-wide feed into a call per minute spanned.
+        // Rounding down widens the window, so the answer is a superset of who
+        // changed; the caller intersects it with the store's own roster anyway.
+        $bucketMinutes = max(1, (int) config('tcp.timeclock.changes_bucket_minutes', 5));
+        $bucket = $since->subMinutes($since->minute % $bucketMinutes)->startOfMinute();
+
+        $cacheKey = self::CHANGES_KEY . ':' . $bucket->format('YmdHi');
 
         $result = Cache::remember(
             $cacheKey,
-            (int) config('tcp.timeclock.changes_cache_seconds', 120),
-            fn () => $this->tcp->listCalculationChanges($since)
+            (int) config('tcp.timeclock.changes_cache_seconds', 240),
+            fn () => $this->tcp->listCalculationChanges($bucket)
         );
 
         if (!is_array($result) || ($result['all_changed'] ?? false)) {

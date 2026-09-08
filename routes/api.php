@@ -45,6 +45,12 @@ Route::prefix('v1')->middleware('auth.token.store')->group(function (): void {
         Route::delete('actual-shifts/{actualId}', [ActualShiftController::class, 'destroy'])->whereNumber('actualId')->name('api.v1.actual-shifts.destroy');
         Route::post('shift-assignments/{assignmentId}/confirm-actual', [ActualShiftController::class, 'confirmPlanned'])
             ->whereNumber('assignmentId')->name('api.v1.actual-shifts.confirm');
+        // The mirror of confirm-actual: "they never turned up". Addresses the
+        // ASSIGNMENT, so a planned shift with no actual yet can be marked in
+        // one call — the client used to create a "worked as planned" entry and
+        // then flip it, which momentarily recorded the opposite of the truth.
+        Route::post('shift-assignments/{assignmentId}/absent-actual', [ActualShiftController::class, 'absentPlanned'])
+            ->whereNumber('assignmentId')->name('api.v1.actual-shifts.absent-planned');
 
         // ---- availability & time off ----------------------------------------
         Route::get('availability', [AvailabilityController::class, 'index'])->name('api.v1.availability.index');

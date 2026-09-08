@@ -44,6 +44,17 @@ class BulkAndTemplateTest extends TestCase
         HumanityPosition::query()->create(['humanity_position_id' => 'POS1', 'humanity_location_id' => 'LOC1', 'name' => 'Kitchen']);
         HumanityPositionMap::query()->create(['store_id' => 1, 'position_id' => null, 'humanity_position_id' => 'POS1', 'is_default' => true]);
 
+        // The TCP job-code catalog. Recording an ACTUAL now writes the hours
+        // through to TCP — it is the system of record for worked time — so the
+        // review cases below need the clocking side wired up too.
+        \App\Models\TcpJobCode::query()->create([
+            'tcp_job_code_id' => 'JOB1',
+            'description' => 'Kitchen - 3759-01',
+            'store_number' => '03759-00001',
+            'clockable' => true,
+            'is_active' => true,
+        ]);
+
         foreach ([501 => 'Marco', 502 => 'Sofia'] as $id => $firstName) {
             Employee::query()->create([
                 'id' => $id,
@@ -51,6 +62,8 @@ class BulkAndTemplateTest extends TestCase
                 'last_name' => 'Test',
                 'active' => true,
                 'humanity_employee_id' => (string) (88000 + $id),
+                'tcp_employee_id' => (string) $id,
+                'position_label' => 'Kitchen',
             ]);
 
             EmployeeStore::query()->create([
@@ -68,7 +81,17 @@ class BulkAndTemplateTest extends TestCase
         $this->humanity->seedEmployee('88501');
         $this->humanity->seedEmployee('88502');
 
-        config(['humanity.writes_enabled' => true, 'humanity.requests_per_second' => 0]);
+        $tcp = app(\App\Services\Tcp\FakeTcpClient::class);
+        $tcp->seedEmployee('501');
+        $tcp->seedEmployee('502');
+        $tcp->seedJobCode('JOB1', 'Kitchen');
+
+        config([
+            'humanity.writes_enabled' => true,
+            'humanity.requests_per_second' => 0,
+            'tcp.driver' => 'fake',
+            'tcp.writes_enabled' => true,
+        ]);
     }
 
     private function seedWeek(string $weekStart = '2026-08-04'): void
@@ -290,7 +313,8 @@ class BulkAndTemplateTest extends TestCase
 
         $actual = app(ActualShiftService::class)->confirmPlanned($this->store, $assignment);
 
-        $this->assertSame(ActualShift::STATUS_CONFIRMED, $actual->status);
+        $this->assertSame(ActualShift::VARIANCE_MATCHES, $actual->time_variance);
+        $this->assertSame(ActualShift::REVIEW_WORKED, $actual->review_state);
         $this->assertSame($assignment->id, $actual->shift_assignment_id);
         $this->assertSame(480, $actual->duration_minutes);
     }
@@ -312,7 +336,7 @@ class BulkAndTemplateTest extends TestCase
 
         // Status is derived, never taken from the client, so it can't drift
         // from the times it describes.
-        $this->assertSame(ActualShift::STATUS_MODIFIED, $actual->status);
+        $this->assertSame(ActualShift::VARIANCE_DIFFERS, $actual->time_variance);
         $this->assertSame(420, $actual->duration_minutes);
     }
 
@@ -326,7 +350,7 @@ class BulkAndTemplateTest extends TestCase
             'note' => 'Covered for Marco',
         ]);
 
-        $this->assertSame(ActualShift::STATUS_ADDED, $actual->status);
+        $this->assertSame(ActualShift::VARIANCE_UNPLANNED, $actual->time_variance);
         $this->assertNull($actual->shift_assignment_id);
     }
 
@@ -339,7 +363,7 @@ class BulkAndTemplateTest extends TestCase
         app(ActualShiftService::class)->markAbsent($this->store, $assignment, 'No call, no show');
 
         $this->assertSame(1, ActualShift::query()->count());
-        $this->assertSame(ActualShift::STATUS_ABSENT, ActualShift::sole()->status);
+        $this->assertSame(ActualShift::REVIEW_ABSENT, ActualShift::sole()->review_state);
     }
 
     public function test_a_shift_on_the_last_day_of_the_week_is_included(): void

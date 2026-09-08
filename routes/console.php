@@ -65,9 +65,23 @@ Schedule::command('humanity:sync-leave')
 
 // TCP Manager+ worked hours -> actual_shifts. Incremental via TCP's updatedOn
 // delta filter, so each run costs a handful of calls rather than re-reading the
-// fortnight. Hourly rather than every 5 minutes because the daily quota is
-// 2500 for the whole service — see config/tcp.php.
+// fortnight.
+//
+// Every ten minutes, not hourly: TCP is the system of record for worked time
+// and the dashboard now writes to it, so a change made in TCP's own UI should
+// come back in minutes rather than being up to an hour stale.
+//
+// The budget maths, since the daily quota is 2500 for the WHOLE service:
+//   144 runs/day x ~1 call = ~150/day floor, roughly 6% of the 2250 left after
+//   the interactive reserve. Getting there took two fixes — dropping the
+//   per-run ping, and bucketing the calculationchanges cache key so all 38
+//   stores in a run share ONE feed call instead of one per cursor-minute.
+//   Segment fetches sit on top and are driven by real punch volume.
+//
+// Before shortening this further, run `php artisan tcp:quota` against
+// production and look at what is actually being spent — the variable part
+// depends on punch distribution, not on arithmetic.
 Schedule::command('tcp:sync-worksegments')
-    ->hourly()
+    ->everyTenMinutes()
     ->withoutOverlapping()
     ->skip(fn () => config('tcp.driver') !== 'http');

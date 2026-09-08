@@ -333,7 +333,9 @@ class TcpClockingTest extends TestCase
         $this->assertSame('9001', $actual->tcp_work_segment_id);
         $this->assertSame(480, $actual->duration_minutes);
         // No planned shift to match, so it is ad-hoc coverage.
-        $this->assertSame(ActualShift::STATUS_ADDED, $actual->status);
+        $this->assertSame(ActualShift::VARIANCE_UNPLANNED, $actual->time_variance);
+        // A punch nobody has looked at yet: recorded, not reviewed.
+        $this->assertSame(ActualShift::REVIEW_UNREVIEWED, $actual->review_state);
     }
 
     public function test_an_open_segment_is_not_imported(): void

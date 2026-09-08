@@ -183,7 +183,11 @@ class ScheduleWeekAssembler
                 'duration_minutes' => (int) $actual->duration_minutes,
                 'label' => $actual->label,
                 'type' => $actual->shift_type,
-                'status' => $actual->status,
+                // Pre-split string, kept so clients did not have to change when
+                // the two axes below replaced it. Prefer the axes in new work.
+                'status' => $actual->legacyStatus(),
+                'time_variance' => $actual->time_variance,
+                'review_state' => $actual->review_state,
                 'note' => $actual->note,
                 'source' => $actual->source,
             ])

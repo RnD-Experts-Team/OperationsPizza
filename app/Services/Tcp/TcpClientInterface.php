@@ -4,6 +4,7 @@ namespace App\Services\Tcp;
 
 use App\Services\Tcp\Dto\TcpPunch;
 use App\Services\Tcp\Dto\TcpWorkSegment;
+use App\Services\Tcp\Dto\TcpWorkSegmentPayload;
 use DateTimeInterface;
 
 /**
@@ -56,6 +57,30 @@ interface TcpClientInterface
     ): array;
 
     public function getWorkSegment(string $id): ?TcpWorkSegment;
+
+    /**
+     * State a finished segment outright, rather than punching it in and out.
+     *
+     * This is what a manager's review writes. `punch()` cannot express it:
+     * punches are events against an employee's OPEN segment, so they can
+     * neither create yesterday's completed shift nor amend one that closed.
+     *
+     * TCP takes a LIST on create; one at a time here, because a review is one
+     * shift at a time and the response has to be attributable to it.
+     */
+    public function createWorkSegment(TcpWorkSegmentPayload $payload): TcpWorkSegment;
+
+    /** Whole-model replace, not a patch — see TcpWorkSegmentPayload. */
+    public function updateWorkSegment(string $id, TcpWorkSegmentPayload $payload): TcpWorkSegment;
+
+    /**
+     * Remove a segment entirely.
+     *
+     * Used when a manager marks a shift as a no-show: an absence is the
+     * ABSENCE of worked time, and TCP has no way to represent one as a
+     * segment, so the segment has to go.
+     */
+    public function deleteWorkSegment(string $id): void;
 
     /**
      * Which employees' time cards have changed since a given moment.

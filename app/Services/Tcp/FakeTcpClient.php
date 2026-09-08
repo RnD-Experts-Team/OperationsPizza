@@ -4,6 +4,7 @@ namespace App\Services\Tcp;
 
 use App\Services\Tcp\Dto\TcpPunch;
 use App\Services\Tcp\Dto\TcpWorkSegment;
+use App\Services\Tcp\Dto\TcpWorkSegmentPayload;
 use App\Services\Tcp\Exceptions\TcpException;
 use App\Services\Tcp\Exceptions\TcpRateLimitException;
 use Carbon\CarbonImmutable;
@@ -275,6 +276,67 @@ class FakeTcpClient implements TcpClientInterface
         $this->guard('getWorkSegment');
 
         return $this->segments[$id] ?? null;
+    }
+
+    public function createWorkSegment(TcpWorkSegmentPayload $payload): TcpWorkSegment
+    {
+        $this->guard('createWorkSegment');
+        $this->assertWritesEnabled('create work segment');
+
+        $this->calls[] = ['op' => 'createWorkSegment', 'args' => $payload->toPayload()];
+
+        $segment = $this->segmentFrom((string) $this->nextSegmentId++, $payload);
+        $this->segments[$segment->id] = $segment;
+
+        return $segment;
+    }
+
+    public function updateWorkSegment(string $id, TcpWorkSegmentPayload $payload): TcpWorkSegment
+    {
+        $this->guard('updateWorkSegment');
+        $this->assertWritesEnabled('update work segment');
+
+        $this->calls[] = ['op' => 'updateWorkSegment', 'args' => ['id' => $id] + $payload->toPayload()];
+
+        // TCP 404s on an id it does not have; a caller that gets this back has
+        // a stale local mirror, which is worth failing loudly on.
+        if (!isset($this->segments[$id])) {
+            throw new TcpException("Work segment {$id} not found.", 404);
+        }
+
+        // A PUT is a whole-model replace, so the stored segment is rebuilt from
+        // the payload rather than merged into — matching what TCP does.
+        return $this->segments[$id] = $this->segmentFrom($id, $payload);
+    }
+
+    public function deleteWorkSegment(string $id): void
+    {
+        $this->guard('deleteWorkSegment');
+        $this->assertWritesEnabled('delete work segment');
+
+        $this->calls[] = ['op' => 'deleteWorkSegment', 'args' => ['id' => $id]];
+
+        if (!isset($this->segments[$id])) {
+            throw new TcpException("Work segment {$id} not found.", 404);
+        }
+
+        unset($this->segments[$id]);
+    }
+
+    private function segmentFrom(string $id, TcpWorkSegmentPayload $payload): TcpWorkSegment
+    {
+        $body = $payload->toPayload();
+
+        return new TcpWorkSegment(
+            id: $id,
+            employeeId: $payload->employeeId,
+            jobCodeId: $payload->jobCodeId,
+            timeIn: $body['timeIn'],
+            timeOut: $body['timeOut'],
+            shiftNotes: $body['shiftNotes'] ?? [],
+            updatedOn: CarbonImmutable::now()->format('Y-m-d\TH:i:s'),
+            raw: $body,
+        );
     }
 
     /** @var array<int, string>|null  Set to simulate TCP reporting changes. */

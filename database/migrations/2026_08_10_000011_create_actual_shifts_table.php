@@ -7,10 +7,18 @@ use Illuminate\Support\Facades\Schema;
 /**
  * What actually happened, as reviewed by a manager.
  *
- * Owned entirely by this service and NEVER written to Humanity — it is a review
- * artifact, not a schedule. Keeping it one-way is what leaves exactly one
- * write-through path in the whole system. A TimeClock importer can pre-fill
- * these later (source='timeclock').
+ * NEVER written to Humanity — Humanity owns the plan, and worked time is not a
+ * schedule.
+ *
+ * It IS written through to TCP Manager+, which is the system of record for
+ * worked hours (see ActualShiftService). That was not true when this table was
+ * created: rows were local-only and pre-filled by a TimeClock importer
+ * (source='timeclock'), which meant a manager's correction lived here alone and
+ * was reverted by the next `tcp:sync-worksegments` run.
+ *
+ * Two columns stay local because TCP models neither: `status='absent'` (an
+ * absence is the absence of worked time — marking one deletes the segment) and
+ * `shift_assignment_id` (the link to the plan, which only this service joins).
  */
 return new class extends Migration {
     public function up(): void

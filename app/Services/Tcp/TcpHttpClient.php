@@ -4,6 +4,7 @@ namespace App\Services\Tcp;
 
 use App\Services\Tcp\Dto\TcpPunch;
 use App\Services\Tcp\Dto\TcpWorkSegment;
+use App\Services\Tcp\Dto\TcpWorkSegmentPayload;
 use App\Services\Tcp\Exceptions\TcpAuthException;
 use App\Services\Tcp\Exceptions\TcpException;
 use App\Services\Tcp\Exceptions\TcpRateLimitException;
@@ -171,6 +172,61 @@ class TcpHttpClient implements TcpClientInterface
         $segments = $this->toWorkSegments($rows);
 
         return $segments[0] ?? null;
+    }
+
+    /**
+     * Interactive, like punch(): a manager is sitting in front of the review
+     * grid waiting for this, so it may spend the daily-quota reserve that
+     * background syncs must leave alone.
+     */
+    public function createWorkSegment(TcpWorkSegmentPayload $payload): TcpWorkSegment
+    {
+        $this->assertWritesEnabled('create work segment');
+
+        // POST takes a LIST of segment models, as createEmployee() does.
+        $rows = $this->request('post', 'worksegments', [$payload->toPayload()], 'create work segment', interactive: true);
+
+        return $this->requireWorkSegment($rows, 'create work segment');
+    }
+
+    public function updateWorkSegment(string $id, TcpWorkSegmentPayload $payload): TcpWorkSegment
+    {
+        $this->assertWritesEnabled('update work segment');
+
+        // PUT takes a single model, NOT a list — unlike the create above.
+        $rows = $this->request('put', "worksegments/{$id}", $payload->toPayload(), 'update work segment', interactive: true);
+
+        return $this->requireWorkSegment($rows, 'update work segment', $id);
+    }
+
+    public function deleteWorkSegment(string $id): void
+    {
+        $this->assertWritesEnabled('delete work segment');
+
+        $this->request('delete', "worksegments/{$id}", [], 'delete work segment', interactive: true);
+    }
+
+    /**
+     * A write's response, as a segment.
+     *
+     * Falls back to the id we already hold when the response omits it —
+     * the same allowance toWorkSegments() documents for punches, whose POST
+     * response carries no id at all.
+     */
+    private function requireWorkSegment(array $rows, string $context, ?string $knownId = null): TcpWorkSegment
+    {
+        $segments = $this->toWorkSegments($rows);
+        $segment = $segments[0] ?? null;
+
+        if ($segment === null) {
+            throw new TcpException("TCP returned no work segment for {$context}.");
+        }
+
+        if ($segment->id === '' && $knownId !== null) {
+            return TcpWorkSegment::fromArray(['id' => $knownId] + $segment->toArray());
+        }
+
+        return $segment;
     }
 
     // --------------------------------------------------------------- employees

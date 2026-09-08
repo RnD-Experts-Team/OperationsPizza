@@ -100,8 +100,24 @@ return [
     'timeclock' => [
         'lookback_days' => 14,
         'delta_overlap_minutes' => 30,
-        // GET /calculationchanges answers "whose time card changed?" for the
-        // WHOLE account in one call; cached so ten stores don't cost ten calls.
-        'changes_cache_seconds' => 120,
+
+        /*
+         | GET /calculationchanges answers "whose time card changed?" for the
+         | WHOLE account in one call, and the sync runs once per store — so the
+         | result is cached and shared.
+         |
+         | The cache key carries the `since` it was fetched with, and `since`
+         | comes from a PER-STORE cursor, so 38 stores whose cursors landed on
+         | different minutes used to mean several calls per run instead of one.
+         | Flooring `since` to a bucket puts every store in a run on the same
+         | key. Rounding DOWN is the safe direction: it widens the window, so
+         | the feed returns a superset of who changed, and each store still
+         | narrows to its own roster afterwards.
+         |
+         | The TTL must stay BELOW the schedule interval, or a run would serve
+         | the previous run's answer and miss changes for a whole cycle.
+         */
+        'changes_bucket_minutes' => 5,
+        'changes_cache_seconds' => 240,
     ],
 ];
