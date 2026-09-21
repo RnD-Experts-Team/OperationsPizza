@@ -59,19 +59,21 @@ class SyncTcpWorkSegmentsCommand extends Command
         $rows = [];
         $exit = self::SUCCESS;
 
-        $guard = app(\App\Services\External\ExternalWriteGuard::class);
         $dryRun = (bool) $this->option('dry-run');
 
+        /*
+         | No allowlist check here any more.
+         |
+         | EXTERNAL_WRITE_ALLOWED_STORES is a WRITE guard, and this is a read:
+         | it pulls TCP's own record into local tables and sends TCP nothing.
+         | Gating it meant an unpiloted store had no clocking data at all — no
+         | worked hours, and nobody visible on the clock — which is the opposite
+         | of what a rollout guard is for.
+         |
+         | Punches and segment edits are still fully gated, in TcpClockService
+         | and ActualShiftService.
+         */
         foreach ($stores as $store) {
-            // Rollout allowlist: local mirroring is scoped with everything
-            // else while a pilot runs, so an unpiloted store's actual_shifts
-            // stay untouched. Dry runs are read-only and stay unrestricted.
-            if (!$dryRun && $guard->isRestricted() && !$guard->allows((string) $store->store_number)) {
-                $this->line("Skipping {$store->store_number} — not in EXTERNAL_WRITE_ALLOWED_STORES.");
-
-                continue;
-            }
-
             try {
                 $stats = $sync->sync($store, $from, $to, (bool) $this->option('full'), $dryRun);
 
@@ -80,6 +82,7 @@ class SyncTcpWorkSegmentsCommand extends Command
                     $stats['segments'],
                     $stats['imported'],
                     $stats['updated'],
+                    $stats['rollups'],
                     $stats['skipped'],
                     $stats['unlinked'],
                 ];
@@ -101,25 +104,31 @@ class SyncTcpWorkSegmentsCommand extends Command
                 return self::FAILURE;
             } catch (\Throwable $e) {
                 $this->error("  {$store->store_number}: {$e->getMessage()}");
-                $rows[] = [$store->store_number, '—', '—', '—', '—', '—'];
+                $rows[] = [$store->store_number, '—', '—', '—', '—', '—', '—'];
                 $exit = self::FAILURE;
             }
         }
 
         $this->table(
-            ['store', 'segments', 'imported', 'updated', 'skipped', 'unlinked'],
+            ['store', 'segments', 'imported', 'updated', 'rollups', 'skipped', 'unlinked'],
             $rows
         );
 
         // Unlinked segments are worked hours we cannot attribute to anyone —
         // worth surfacing, since it usually means an employee exists in TCP but
         // has no 'TCP ID' external id replicated from hiring.
-        $unlinked = array_sum(array_map(fn ($row) => is_int($row[5]) ? $row[5] : 0, $rows));
+        $unlinked = array_sum(array_map(fn ($row) => is_int($row[6]) ? $row[6] : 0, $rows));
 
         if ($unlinked > 0) {
             $this->warn("{$unlinked} segment(s) belong to employees with no TCP link — their hours are not recorded.");
             $this->line('  php artisan tcp:inspect-employees');
         }
+
+        // Worth being honest about what this number can and cannot see: the
+        // query filters on employeeIds, so TCP only returns people we already
+        // asked about. Anyone missing from our roster entirely is invisible
+        // here by construction — tcp:reconcile-worksegments is what finds them.
+
 
         if ($dryRun) {
             $this->comment('Dry run — nothing was written and the delta cursor did not move.');

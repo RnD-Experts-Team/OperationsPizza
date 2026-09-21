@@ -4,7 +4,7 @@ namespace Tests\Feature\Tcp;
 
 use App\Models\ActualShift;
 use App\Models\Employee;
-use App\Models\EmployeeClockState;
+use App\Models\TcpWorkSegment as WorkSegmentRow;
 use App\Models\EmployeeStore;
 use App\Models\HumanityLocation;
 use App\Models\HumanityPosition;
@@ -172,8 +172,12 @@ class TcpClockingTest extends TestCase
     {
         $this->clock()->clockIn($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 09:00', 'America/Chicago'));
 
-        // Still open — nothing to mirror yet, same rule the bulk sync uses.
-        $this->assertSame(0, ActualShift::count());
+        // The shift exists straight away, flagged in progress. It used to be
+        // discarded until clock-out, which is why "who is on the clock" needed
+        // a table of its own.
+        $inProgress = ActualShift::sole();
+        $this->assertTrue($inProgress->is_open);
+        $this->assertNull($inProgress->end_time, 'a shift still being worked has no end, and must not invent one');
 
         $this->clock()->clockOut($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 17:00', 'America/Chicago'));
 
@@ -181,6 +185,8 @@ class TcpClockingTest extends TestCase
         $this->assertSame(501, $actual->employee_id);
         $this->assertSame('timeclock', $actual->source);
         $this->assertSame(480, $actual->duration_minutes);
+        $this->assertFalse($actual->is_open);
+        $this->assertSame('17:00:00', $actual->end_time);
     }
 
     public function test_a_stale_cached_clocked_in_state_is_verified_live_before_refusing(): void
@@ -330,7 +336,7 @@ class TcpClockingTest extends TestCase
         $actual = ActualShift::sole();
         $this->assertSame(501, $actual->employee_id);
         $this->assertSame('timeclock', $actual->source);
-        $this->assertSame('9001', $actual->tcp_work_segment_id);
+        $this->assertSame('9001', $actual->segments->sole()->tcp_work_segment_id);
         $this->assertSame(480, $actual->duration_minutes);
         // No planned shift to match, so it is ad-hoc coverage.
         $this->assertSame(ActualShift::VARIANCE_UNPLANNED, $actual->time_variance);
@@ -338,10 +344,19 @@ class TcpClockingTest extends TestCase
         $this->assertSame(ActualShift::REVIEW_UNREVIEWED, $actual->review_state);
     }
 
-    public function test_an_open_segment_is_not_imported(): void
+    /**
+     * The headline case: a punch made somewhere else entirely.
+     *
+     * Nobody touched our API here — the segment is simply sitting in TCP, as it
+     * would be after somebody clocked in at a physical clock or in TCP's own
+     * app. The sync has to find it, and the person has to show as on the clock.
+     *
+     * This used to be impossible in two separate ways: the sync discarded open
+     * segments, and the table that held "who is on the clock" was only ever
+     * written by our own punch endpoints.
+     */
+    public function test_a_punch_made_outside_this_system_shows_up_on_the_clock(): void
     {
-        // Someone still on the clock would otherwise appear as a shift whose
-        // end time keeps moving.
         $this->tcp->seedSegment(new TcpWorkSegment(
             id: '9002',
             employeeId: '501',
@@ -356,9 +371,24 @@ class TcpClockingTest extends TestCase
             CarbonImmutable::parse('2026-08-31')
         );
 
-        $this->assertSame(0, $stats['imported']);
-        $this->assertSame(1, $stats['skipped']);
-        $this->assertSame(0, ActualShift::count());
+        $this->assertSame(1, $stats['imported']);
+
+        $segment = WorkSegmentRow::query()->sole();
+        $this->assertTrue($segment->isOpen());
+        $this->assertSame(
+            WorkSegmentRow::ORIGIN_DISCOVERED,
+            $segment->origin,
+            'found in TCP, not punched here'
+        );
+
+        // And it is visible without a single further TCP call.
+        $before = count($this->tcp->calls);
+        $this->assertNotNull($this->clock()->currentSegment($this->employee));
+        $this->assertCount(1, $this->clock()->onTheClock($this->store));
+        $this->assertSame($before, count($this->tcp->calls));
+
+        $rollup = ActualShift::sole();
+        $this->assertTrue($rollup->is_open);
     }
 
     public function test_a_missed_punch_is_flagged_rather_than_hidden(): void
@@ -369,7 +399,11 @@ class TcpClockingTest extends TestCase
 
         // The recorded time is a system default, not something the employee
         // did — a manager has to see that.
-        $this->assertTrue(ActualShift::sole()->has_missed_punch);
+        $this->assertTrue(WorkSegmentRow::query()->sole()->hasMissedPunch());
+        $this->assertTrue(
+            ActualShift::sole()->needs_attention,
+            'and the shift above it has to surface, or nobody looks at the segment'
+        );
     }
 
     public function test_resyncing_the_same_segment_updates_rather_than_duplicates(): void
@@ -473,48 +507,58 @@ class TcpClockingTest extends TestCase
 
     // ------------------------------------------------ durable clock state
 
-    public function test_a_punch_records_the_clock_state_in_the_database(): void
+    public function test_a_punch_records_an_open_segment_in_the_database(): void
     {
         $this->clock()->clockIn($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 09:00', 'America/Chicago'));
 
-        $state = EmployeeClockState::query()->where('employee_id', 501)->first();
+        $segment = WorkSegmentRow::query()->where('employee_id', 501)->sole();
 
-        $this->assertNotNull($state, 'A punch must leave a durable record, not just a cache entry.');
-        $this->assertSame(EmployeeClockState::STATUS_CLOCKED_IN, $state->status);
-        $this->assertTrue($state->isClockedIn());
-        $this->assertSame('501', $state->tcp_employee_id);
-        $this->assertSame(1, (int) $state->store_id);
-        $this->assertNotNull($state->clock_in_at);
-        $this->assertNotNull($state->openSegment());
+        $this->assertTrue($segment->isOpen(), 'an open segment IS "on the clock" — there is no second table for it');
+        $this->assertSame('501', $segment->tcp_employee_id);
+        $this->assertSame(1, (int) $segment->store_id);
+        $this->assertSame(WorkSegmentRow::ORIGIN_PUNCH, $segment->origin);
+        $this->assertNotNull($segment->time_in);
     }
 
-    public function test_clocking_out_flips_the_persisted_state(): void
+    public function test_clocking_out_closes_the_same_segment(): void
     {
         $this->clock()->clockIn($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 09:00', 'America/Chicago'));
         $this->clock()->clockOut($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 17:00', 'America/Chicago'));
 
-        $state = EmployeeClockState::query()->where('employee_id', 501)->first();
+        // Amended in place, not appended: TCP closes the segment it opened, and
+        // so do we.
+        $segment = WorkSegmentRow::query()->where('employee_id', 501)->sole();
 
-        $this->assertSame(EmployeeClockState::STATUS_CLOCKED_OUT, $state->status);
-        $this->assertFalse($state->isClockedIn());
-        // A closed segment leaves nothing "open" to report.
-        $this->assertNull($state->clock_in_at);
-        $this->assertNull($state->openSegment());
-        // One row per employee, upserted — not an append-only log.
-        $this->assertSame(1, EmployeeClockState::query()->where('employee_id', 501)->count());
+        $this->assertFalse($segment->isOpen());
+        $this->assertSame(480, $segment->duration_minutes);
+        $this->assertNull($this->clock()->currentSegment($this->employee));
+        $this->assertCount(0, $this->clock()->onTheClock($this->store));
     }
 
-    public function test_a_break_is_distinguishable_from_being_clocked_out(): void
+    /**
+     * A break closes the worked segment in TCP, so mid-break the person is not
+     * on the clock — which is exactly what TCP itself would report.
+     *
+     * The old `on_break` state existed only to remember that the gap was a break
+     * rather than the end of a shift. Nothing needs to: a shift here is
+     * continuous expected work, and the roll-up glues the two segments back
+     * together on the gap rule regardless.
+     */
+    public function test_a_break_closes_the_segment_and_reopens_a_new_one(): void
     {
         $this->clock()->clockIn($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 09:00', 'America/Chicago'));
         $this->clock()->breakStart($this->store, $this->employee, 0, CarbonImmutable::parse('2026-08-06 12:00', 'America/Chicago'));
 
-        $state = EmployeeClockState::query()->where('employee_id', 501)->first();
+        $this->assertNull($this->clock()->currentSegment($this->employee), 'a break closes the segment');
 
-        // TCP closes the segment for a break, so only WE know it was a break.
-        $this->assertSame(EmployeeClockState::STATUS_ON_BREAK, $state->status);
-        $this->assertFalse($state->isClockedIn());
-        $this->assertNotNull($state->break_started_at);
+        $this->clock()->breakEnd($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 12:30', 'America/Chicago'));
+
+        $this->assertNotNull($this->clock()->currentSegment($this->employee));
+        $this->assertSame(2, WorkSegmentRow::query()->where('employee_id', 501)->count());
+
+        // Two segments, ONE shift. Writing them as two actual shifts is what hit
+        // the unique constraint on shift_assignment_id and killed the sync run.
+        $this->assertSame(1, ActualShift::count());
     }
 
     public function test_clock_status_survives_a_cache_flush_without_calling_tcp(): void
@@ -536,28 +580,34 @@ class TcpClockingTest extends TestCase
         $this->assertSame($before, $after, 'A cache flush must be served from the database, not TCP.');
     }
 
-    public function test_a_stale_persisted_state_is_reverified_against_tcp(): void
+    /**
+     * Somebody clocks out in TCP's own UI while our table still shows them on
+     * the clock. The sync has to notice — that is the drift the old cache-and-
+     * TTL arrangement could only ever paper over.
+     */
+    public function test_a_clock_out_made_in_tcp_is_picked_up_by_the_sync(): void
     {
         $this->clock()->clockIn($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 09:00', 'America/Chicago'));
+        $this->assertNotNull($this->clock()->currentSegment($this->employee));
 
-        Cache::flush();
+        // A supervisor closes it directly in TCP. Nothing tells us.
+        $open = $this->tcp->openSegmentFor('501');
+        $this->tcp->segments[$open->id] = new TcpWorkSegment(
+            id: $open->id,
+            employeeId: '501',
+            jobCodeId: 'JOB1',
+            timeIn: $open->timeIn,
+            timeOut: '2026-08-06T17:00:00',
+        );
 
-        // Age the row past the trust window. Persisting state must not make a
-        // stale answer any longer-lived than the cache-only version allowed —
-        // someone can still punch at a physical clock or in TCP's own app.
-        EmployeeClockState::query()->where('employee_id', 501)->update([
-            'last_synced_at' => CarbonImmutable::now()->subSeconds(
-                (int) config('tcp.clock_state_ttl_seconds', 900) + 60
-            ),
-        ]);
+        app(TcpWorkSegmentSync::class)->sync(
+            $this->store,
+            CarbonImmutable::parse('2026-08-01'),
+            CarbonImmutable::parse('2026-08-31')
+        );
 
-        $before = count(array_filter($this->tcp->calls, fn ($c) => $c['op'] === 'listWorkSegments'));
-
-        $this->clock()->currentSegment($this->employee);
-
-        $after = count(array_filter($this->tcp->calls, fn ($c) => $c['op'] === 'listWorkSegments'));
-
-        $this->assertGreaterThan($before, $after, 'A stale row must be re-verified against TCP.');
+        $this->assertNull($this->clock()->currentSegment($this->employee), 'the sync must reconcile our picture with TCP');
+        $this->assertSame(480, ActualShift::sole()->duration_minutes);
     }
 
     public function test_a_stored_segment_round_trips_intact(): void

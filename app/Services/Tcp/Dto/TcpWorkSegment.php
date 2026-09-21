@@ -37,7 +37,7 @@ final class TcpWorkSegment
     }
 
     /**
-     * Round-trips through storage (employee_clock_states.open_segment).
+     * Round-trips through anything that stores a segment as JSON.
      *
      * Keyed on this DTO's own property names rather than TCP's wire format, so
      * a stored segment stays readable if the vendor renames a field — and so

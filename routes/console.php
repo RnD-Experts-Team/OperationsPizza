@@ -85,3 +85,27 @@ Schedule::command('tcp:sync-worksegments')
     ->everyTenMinutes()
     ->withoutOverlapping()
     ->skip(fn () => config('tcp.driver') !== 'http');
+
+/*
+ | The nightly truth pass, and the backstop for two things the delta above
+ | structurally cannot do.
+ |
+ | A segment VOIDED in TCP simply stops being returned, which a delta cannot
+ | tell apart from "unchanged" — so without this, an orphan row is paid out
+ | forever. And the delta skips a store whenever /calculationchanges does not
+ | name any of its people; TCP does not document whether that feed reflects raw
+ | punch inserts or only its own recalculations, so re-reading the window
+ | unconditionally is what bounds that risk to a day rather than leaving it open.
+ |
+ | It also reports who is missing. The delta filters on employeeIds, so TCP only
+ | returns people we already knew to ask about; somebody working at a store with
+ | no local link is invisible to it by construction.
+ |
+ | Cost: roughly 76-150 calls, plus one per store for the roster — comfortably
+ | inside the ~2250/day left after the interactive reserve. Run at 03:00, after
+ | the worst of the overnight close and before anyone opens.
+ */
+Schedule::command('tcp:reconcile-worksegments')
+    ->dailyAt('03:00')
+    ->withoutOverlapping()
+    ->skip(fn () => config('tcp.driver') !== 'http');

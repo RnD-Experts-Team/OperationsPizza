@@ -11,6 +11,7 @@ use App\Models\HumanityPositionMap;
 use App\Models\Shift;
 use App\Models\ShiftAssignment;
 use App\Models\Store;
+use App\Models\TcpWorkSegment as WorkSegmentRow;
 use App\Models\TcpJobCode;
 use App\Models\User;
 use App\Services\Tcp\FakeTcpClient;
@@ -243,7 +244,7 @@ class ActualShiftWorkflowTest extends TestCase
         ], $this->headers())->assertOk();
 
         $this->assertSame(ActualShift::REVIEW_ABSENT, ActualShift::query()->find($id)->review_state);
-        $this->assertSame('no show, called in later', ActualShift::query()->find($id)->note);
+        $this->assertSame('no show, called in later', ActualShift::query()->find($id)->manager_note);
     }
 
     public function test_an_absence_survives_a_time_edit_too(): void
@@ -293,8 +294,8 @@ class ActualShiftWorkflowTest extends TestCase
             'label' => 'Covered the fryer instead',
         ], $this->headers())->assertCreated();
 
-        $this->assertSame('modified', $response->json('data.status'));
         $this->assertSame(ActualShift::VARIANCE_DIFFERS, $response->json('data.time_variance'));
+        $this->assertNull($response->json('data.status'), 'the pre-split string is no longer emitted');
     }
 
     public function test_an_identical_entry_is_confirmed(): void
@@ -310,7 +311,6 @@ class ActualShiftWorkflowTest extends TestCase
             'label' => 'Kitchen',
         ], $this->headers())->assertCreated();
 
-        $this->assertSame('confirmed', $response->json('data.status'));
         $this->assertSame(ActualShift::VARIANCE_MATCHES, $response->json('data.time_variance'));
     }
 
@@ -326,20 +326,12 @@ class ActualShiftWorkflowTest extends TestCase
             timeOut: '2026-08-05T16:07:00',
         ));
 
-        $actual = ActualShift::query()->create([
-            'store_id' => 1,
-            'employee_id' => 501,
-            'shift_date' => '2026-08-05',
+        $actual = $this->seedPunchedShift('WS-1', [
             'start_time' => '10:03:00',
             'end_time' => '16:07:00',
             'starts_at_utc' => '2026-08-05 15:03:00',
             'ends_at_utc' => '2026-08-05 21:07:00',
             'duration_minutes' => 364,
-            'crosses_midnight' => false,
-            'time_variance' => ActualShift::VARIANCE_UNPLANNED,
-            'review_state' => ActualShift::REVIEW_UNREVIEWED,
-            'source' => 'timeclock',
-            'tcp_work_segment_id' => 'WS-1',
         ]);
 
         $this->postJson("/api/v1/stores/03759-00001/actual-shifts/{$actual->id}", [
@@ -349,7 +341,7 @@ class ActualShiftWorkflowTest extends TestCase
 
         $fresh = $actual->refresh();
         $this->assertSame('timeclock', $fresh->source, 'a corrected punch is still a punch');
-        $this->assertSame('WS-1', $fresh->tcp_work_segment_id, 'the TCP identity must survive the edit');
+        $this->assertSame('WS-1', $this->segmentIdOf($fresh->id), 'the TCP identity must survive the edit');
     }
 
     // ------------------------------------------------------------ edit scope
@@ -393,13 +385,13 @@ class ActualShiftWorkflowTest extends TestCase
 
         // And the local row is bound to it, which is what stops the hourly
         // sync from treating this as an unknown segment and duplicating it.
-        $this->assertSame($segment->id, ActualShift::query()->find($id)->tcp_work_segment_id);
+        $this->assertSame($segment->id, $this->segmentIdOf($id));
     }
 
     public function test_amending_an_entry_amends_the_same_tcp_segment(): void
     {
         $id = $this->adHocCoverage();
-        $segmentId = ActualShift::query()->find($id)->tcp_work_segment_id;
+        $segmentId = $this->segmentIdOf($id);
 
         $this->postJson("/api/v1/stores/03759-00001/actual-shifts/{$id}", [
             'start_time' => '11:00',
@@ -422,7 +414,7 @@ class ActualShiftWorkflowTest extends TestCase
         ], $this->headers())->assertOk();
 
         $this->assertCount(0, $this->tcpSegments(), 'a no-show must not stay on the payroll clock');
-        $this->assertNull(ActualShift::query()->find($id)->tcp_work_segment_id);
+        $this->assertNull($this->segmentIdOf($id), 'an absence keeps no segment');
         $this->assertSame(ActualShift::REVIEW_ABSENT, ActualShift::query()->find($id)->review_state);
     }
 
@@ -498,21 +490,7 @@ class ActualShiftWorkflowTest extends TestCase
             actualTimeOut: '2026-08-05T16:04:00',
         ));
 
-        $punch = ActualShift::query()->create([
-            'store_id' => 1,
-            'employee_id' => 501,
-            'shift_date' => '2026-08-05',
-            'start_time' => '09:58:00',
-            'end_time' => '16:04:00',
-            'starts_at_utc' => '2026-08-05 14:58:00',
-            'ends_at_utc' => '2026-08-05 21:04:00',
-            'duration_minutes' => 366,
-            'crosses_midnight' => false,
-            'time_variance' => ActualShift::VARIANCE_UNPLANNED,
-            'review_state' => ActualShift::REVIEW_UNREVIEWED,
-            'source' => 'timeclock',
-            'tcp_work_segment_id' => 'WS-9',
-        ]);
+        $punch = $this->seedPunchedShift('WS-9');
 
         $assignment = $this->plannedAssignment();
 
@@ -522,7 +500,7 @@ class ActualShiftWorkflowTest extends TestCase
 
         $fresh = $punch->refresh();
         $this->assertSame($assignment->id, $fresh->shift_assignment_id, 'the punch is now attributed to the plan');
-        $this->assertSame('WS-9', $fresh->tcp_work_segment_id);
+        $this->assertSame('WS-9', $this->segmentIdOf($fresh->id));
         $this->assertSame(1, ActualShift::query()->count(), 'linking must not create a second entry');
 
         // The evidence in TCP is untouched: same segment, same real punch times.
@@ -554,13 +532,12 @@ class ActualShiftWorkflowTest extends TestCase
         $this->postJson("/api/v1/stores/03759-00001/shift-assignments/{$assignment->id}/absent-actual", [
             'note' => 'no call, no show',
         ], $this->headers())->assertCreated()
-            ->assertJsonPath('data.status', 'absent')
             ->assertJsonPath('data.review_state', ActualShift::REVIEW_ABSENT);
 
         $actual = ActualShift::query()->first();
         $this->assertSame(ActualShift::REVIEW_ABSENT, $actual->review_state);
-        $this->assertSame('no call, no show', $actual->note);
-        $this->assertNull($actual->tcp_work_segment_id);
+        $this->assertSame('no call, no show', $actual->manager_note);
+        $this->assertNull($this->segmentIdOf($actual->id));
 
         // The old two-step created a segment purely to delete it. A no-show
         // should never touch TCP at all.
@@ -600,14 +577,21 @@ class ActualShiftWorkflowTest extends TestCase
         app(TcpWorkSegmentSync::class)->syncOne(
             Store::query()->find(1),
             Employee::query()->find(501),
-            $this->tcp->segments[$actual->tcp_work_segment_id],
+            $this->tcp->segments[$this->segmentIdOf($actual->id)],
         );
 
         $fresh = $actual->refresh();
 
-        // Recomputed, correctly: a TCP segment carries no label, so on the
-        // times alone it does match the plan.
-        $this->assertSame(ActualShift::VARIANCE_MATCHES, $fresh->time_variance);
+        /*
+         | Still `differs`, and that is the fix.
+         |
+         | The sync and the review path used to derive this differently — the
+         | sync compared times only, the review path compared times AND label —
+         | so this same shift read `matches` after a sync and `differs` after any
+         | manager edit, flipping back and forth on a schedule. They now share
+         | one method, and the label a manager gave it is part of the comparison.
+         */
+        $this->assertSame(ActualShift::VARIANCE_DIFFERS, $fresh->time_variance);
         // Untouched. This is the assertion that used to fail.
         $this->assertSame(ActualShift::REVIEW_WORKED, $fresh->review_state);
     }
@@ -622,21 +606,7 @@ class ActualShiftWorkflowTest extends TestCase
             timeOut: '2026-08-05T16:04:00',
         ));
 
-        $punch = ActualShift::query()->create([
-            'store_id' => 1,
-            'employee_id' => 501,
-            'shift_date' => '2026-08-05',
-            'start_time' => '09:58:00',
-            'end_time' => '16:04:00',
-            'starts_at_utc' => '2026-08-05 14:58:00',
-            'ends_at_utc' => '2026-08-05 21:04:00',
-            'duration_minutes' => 366,
-            'crosses_midnight' => false,
-            'time_variance' => ActualShift::VARIANCE_UNPLANNED,
-            'review_state' => ActualShift::REVIEW_UNREVIEWED,
-            'source' => 'timeclock',
-            'tcp_work_segment_id' => 'WS-7',
-        ]);
+        $punch = $this->seedPunchedShift('WS-7');
 
         $this->postJson("/api/v1/stores/03759-00001/actual-shifts/{$punch->id}", [
             'start_time' => '10:00',
@@ -665,25 +635,78 @@ class ActualShiftWorkflowTest extends TestCase
         $this->assertCount(1, $this->tcpSegments(), 'and the hours go back to TCP');
     }
 
-    /** The pre-split string clients still read, across every combination. */
-    public function test_the_legacy_status_string_still_describes_every_combination(): void
+    /**
+     * `source` is derived from the segments, and could not be derived from
+     * merely HAVING segments — a manager's hand-entry is pushed to TCP and gets
+     * one too. Only the segment's own `origin` distinguishes them.
+     */
+    public function test_source_is_derived_from_where_the_punch_was_made(): void
     {
-        $cases = [
-            [ActualShift::VARIANCE_MATCHES, ActualShift::REVIEW_WORKED, 'confirmed'],
-            [ActualShift::VARIANCE_DIFFERS, ActualShift::REVIEW_WORKED, 'modified'],
-            [ActualShift::VARIANCE_UNPLANNED, ActualShift::REVIEW_WORKED, 'added'],
-            [ActualShift::VARIANCE_MATCHES, ActualShift::REVIEW_UNREVIEWED, 'confirmed'],
-            [ActualShift::VARIANCE_UNPLANNED, ActualShift::REVIEW_UNREVIEWED, 'added'],
-            // The verdict wins over the comparison, whatever the times say.
-            [ActualShift::VARIANCE_MATCHES, ActualShift::REVIEW_ABSENT, 'absent'],
-            [ActualShift::VARIANCE_DIFFERS, ActualShift::REVIEW_ABSENT, 'absent'],
-        ];
+        $handEntered = $this->postJson('/api/v1/stores/03759-00001/actual-shifts', [
+            'employee_id' => 501,
+            'shift_date' => '2026-08-05',
+            'start_time' => '10:00',
+            'end_time' => '16:00',
+        ], $this->headers())->assertCreated()->json('data.id');
 
-        foreach ($cases as [$variance, $review, $expected]) {
-            $actual = new ActualShift(['time_variance' => $variance, 'review_state' => $review]);
+        $this->assertSame('manual', ActualShift::query()->find($handEntered)->source);
+        $this->assertSame(
+            WorkSegmentRow::ORIGIN_MANUAL,
+            WorkSegmentRow::query()->where('actual_shift_id', $handEntered)->value('origin'),
+            'a hand-entry still creates a TCP segment, so HAVING one proves nothing'
+        );
 
-            $this->assertSame($expected, $actual->legacyStatus(), "{$variance} + {$review}");
-        }
+        $punched = $this->seedPunchedShift('WS-SRC');
+
+        $this->assertSame('timeclock', $punched->refresh()->source);
+    }
+
+    /**
+     * A shift already recorded from a punch: the roll-up, plus the segment
+     * behind it. Hand-building only the roll-up would model something that can
+     * no longer exist — worked hours with no punch under them.
+     */
+    private function seedPunchedShift(string $segmentId, array $shift = []): ActualShift
+    {
+        $actual = ActualShift::query()->create(array_merge([
+            'store_id' => 1,
+            'employee_id' => 501,
+            'shift_date' => '2026-08-05',
+            'start_time' => '09:58:00',
+            'end_time' => '16:04:00',
+            'starts_at_utc' => '2026-08-05 14:58:00',
+            'ends_at_utc' => '2026-08-05 21:04:00',
+            'duration_minutes' => 366,
+            'crosses_midnight' => false,
+            'time_variance' => ActualShift::VARIANCE_UNPLANNED,
+            'review_state' => ActualShift::REVIEW_UNREVIEWED,
+        ], $shift));
+
+        WorkSegmentRow::query()->create([
+            'tcp_work_segment_id' => $segmentId,
+            'actual_shift_id' => $actual->id,
+            'employee_id' => $actual->employee_id,
+            'store_id' => $actual->store_id,
+            'tcp_employee_id' => '501',
+            'tcp_job_code_id' => 'JOB1',
+            // Found in TCP rather than punched here — the case this whole sync
+            // exists for.
+            'origin' => WorkSegmentRow::ORIGIN_DISCOVERED,
+            'time_in' => $actual->shift_date->toDateString() . ' ' . $actual->start_time,
+            'time_out' => $actual->shift_date->toDateString() . ' ' . $actual->end_time,
+            'starts_at_utc' => $actual->starts_at_utc,
+            'ends_at_utc' => $actual->ends_at_utc,
+            'duration_minutes' => $actual->duration_minutes,
+        ]);
+
+        return $actual;
+    }
+
+    private function segmentIdOf(int|string $actualId): ?string
+    {
+        return WorkSegmentRow::query()
+            ->where('actual_shift_id', $actualId)
+            ->value('tcp_work_segment_id');
     }
 
     public function test_a_store_outside_the_rollout_allowlist_cannot_write_hours(): void

@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\V1\Concerns\ResolvesStore;
 use App\Http\Controllers\Controller;
 use App\Models\ActualShift;
 use App\Models\ShiftAssignment;
+use App\Services\Scheduling\ActualShiftRollup;
 use App\Services\Scheduling\ActualShiftService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -15,8 +16,10 @@ class ActualShiftController extends Controller
 {
     use ResolvesStore;
 
-    public function __construct(private readonly ActualShiftService $actuals)
-    {
+    public function __construct(
+        private readonly ActualShiftService $actuals,
+        private readonly ActualShiftRollup $rollup,
+    ) {
     }
 
     public function store(Request $request, string $storeId): JsonResponse
@@ -81,10 +84,14 @@ class ActualShiftController extends Controller
             'shift_assignment_id' => $keep('shift_assignment_id', $actual->shift_assignment_id),
             'shift_date' => $validated['shift_date'] ?? $actual->shift_date->toDateString(),
             'start_time' => $validated['start_time'] ?? substr((string) $actual->start_time, 0, 5),
-            'end_time' => $validated['end_time'] ?? substr((string) $actual->end_time, 0, 5),
+            // Falls back to the start when the shift is still open: a manager
+            // amending an in-progress shift has to state an end, and there is
+            // no previous one to keep.
+            'end_time' => $validated['end_time']
+                ?? substr((string) ($actual->end_time ?? $actual->start_time), 0, 5),
             'label' => $keep('label', $actual->label),
             'shift_type' => $validated['shift_type'] ?? $actual->shift_type,
-            'note' => $keep('note', $actual->note),
+            'note' => $keep('note', $actual->manager_note),
             'review_state' => $validated['review_state'] ?? null,
         ], $request->user()?->id);
 
@@ -101,11 +108,49 @@ class ActualShiftController extends Controller
         $updated = $this->actuals->markAbsentEntry(
             $store,
             $actual,
-            $request->input('note', $actual->note),
+            $request->input('note', $actual->manager_note),
             $request->user()?->id,
         );
 
         return response()->json(['data' => $this->actuals->present($updated)]);
+    }
+
+    /**
+     * Two shifts were really one. Fold the punches together and pin it.
+     *
+     * Nothing is sent to TCP: which segments form a shift is our concept, and
+     * TCP has nowhere to put it. The hours are unchanged — they are the same
+     * punches, counted once.
+     */
+    public function merge(Request $request, string $storeId, int $actualId): JsonResponse
+    {
+        $validated = $request->validate([
+            'actual_shift_ids' => ['required', 'array', 'min:1'],
+            'actual_shift_ids.*' => ['integer'],
+        ]);
+
+        $store = $this->resolveStore($storeId);
+        $target = $this->findActual((int) $store->id, $actualId);
+
+        $merged = $this->rollup->merge($store, $target, $validated['actual_shift_ids']);
+
+        return response()->json(['data' => $this->actuals->present($merged)]);
+    }
+
+    /** One shift was really two. Move the named punches out into their own. */
+    public function split(Request $request, string $storeId, int $actualId): JsonResponse
+    {
+        $validated = $request->validate([
+            'segment_ids' => ['required', 'array', 'min:1'],
+            'segment_ids.*' => ['integer'],
+        ]);
+
+        $store = $this->resolveStore($storeId);
+        $source = $this->findActual((int) $store->id, $actualId);
+
+        $created = $this->rollup->split($store, $source, $validated['segment_ids']);
+
+        return response()->json(['data' => $this->actuals->present($created)], 201);
     }
 
     /** The one-click "worked as planned" from the review grid. */

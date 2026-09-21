@@ -119,8 +119,11 @@ class TcpHttpClient implements TcpClientInterface
             $segments = array_merge($segments, $this->toWorkSegments($rows));
 
             $page++;
-            // Fewer than a full page means the end — the documented way to
-            // detect it, since no total count is returned.
+            // Fewer than a full page means the end. A total IS returned —
+            // meta.responseResults.totalPages — so this costs one extra request
+            // per chunk to rediscover something the last response already said.
+            // Reading it would need request() to stop discarding `meta`; worth
+            // doing when that plumbing is touched, on a 2500/day budget.
         } while (count($rows) === $perPage && $page <= 100);
 
         return $segments;

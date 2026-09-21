@@ -42,6 +42,21 @@ Route::prefix('v1')->middleware('auth.token.store')->group(function (): void {
         Route::post('actual-shifts', [ActualShiftController::class, 'store'])->name('api.v1.actual-shifts.store');
         Route::post('actual-shifts/{actualId}', [ActualShiftController::class, 'update'])->whereNumber('actualId')->name('api.v1.actual-shifts.update');
         Route::post('actual-shifts/{actualId}/absent', [ActualShiftController::class, 'absent'])->whereNumber('actualId')->name('api.v1.actual-shifts.absent');
+
+        /*
+         | Grouping, asserted by a manager.
+         |
+         | Which punches form one shift is decided by a gap threshold, and a
+         | threshold is a default rather than a verdict. These two let a person
+         | overrule it, and the decision is pinned so the next sync leaves it
+         | alone.
+         |
+         | Neither touches TCP. Grouping is ours — TCP stores segments and has no
+         | concept of a shift over them — so there is nothing to tell it, and the
+         | hours are unchanged either way: the same punches, counted once.
+         */
+        Route::post('actual-shifts/{actualId}/merge', [ActualShiftController::class, 'merge'])->whereNumber('actualId')->name('api.v1.actual-shifts.merge');
+        Route::post('actual-shifts/{actualId}/split', [ActualShiftController::class, 'split'])->whereNumber('actualId')->name('api.v1.actual-shifts.split');
         Route::delete('actual-shifts/{actualId}', [ActualShiftController::class, 'destroy'])->whereNumber('actualId')->name('api.v1.actual-shifts.destroy');
         Route::post('shift-assignments/{assignmentId}/confirm-actual', [ActualShiftController::class, 'confirmPlanned'])
             ->whereNumber('assignmentId')->name('api.v1.actual-shifts.confirm');
@@ -90,9 +105,31 @@ Route::prefix('v1')->middleware('auth.token.store')->group(function (): void {
         // purpose — nothing here touches the `shifts` tables.
         Route::post('employees/{employeeId}/clock-in', [ClockController::class, 'clockIn'])->whereNumber('employeeId')->name('api.v1.clock.in');
         Route::post('employees/{employeeId}/clock-out', [ClockController::class, 'clockOut'])->whereNumber('employeeId')->name('api.v1.clock.out');
-        Route::post('employees/{employeeId}/break-start', [ClockController::class, 'breakStart'])->whereNumber('employeeId')->name('api.v1.clock.break-start');
-        Route::post('employees/{employeeId}/break-end', [ClockController::class, 'breakEnd'])->whereNumber('employeeId')->name('api.v1.clock.break-end');
         Route::get('employees/{employeeId}/clock-status', [ClockController::class, 'status'])->whereNumber('employeeId')->name('api.v1.clock.status');
+
+        // Everyone on the clock at this store, in one query. No TCP call, so a
+        // dashboard may poll it — which was not true of clock-status, where each
+        // miss cost a vendor request per employee.
+        Route::get('on-the-clock', [ClockController::class, 'onTheClock'])->name('api.v1.clock.on-the-clock');
+
+        /*
+         | Break punches, registered only when tcp.breaks_enabled is on — and it
+         | is off by default.
+         |
+         | A shift here is continuous expected work: you work it, or you are
+         | asked to leave. Breaks are not something the business schedules, so
+         | offering the action implied a concept that does not exist. The code
+         | behind these is kept rather than deleted, because a store or a state
+         | may yet mandate a meal break.
+         |
+         | This hides only the ACTION. The sync still handles a shift arriving as
+         | several segments, because anyone can punch out and back in at a
+         | physical clock and TCP will split it regardless of what we offer.
+         */
+        if (config('tcp.breaks_enabled')) {
+            Route::post('employees/{employeeId}/break-start', [ClockController::class, 'breakStart'])->whereNumber('employeeId')->name('api.v1.clock.break-start');
+            Route::post('employees/{employeeId}/break-end', [ClockController::class, 'breakEnd'])->whereNumber('employeeId')->name('api.v1.clock.break-end');
+        }
 
         // ---- the unsynced-employee loop ---------------------------------------
         Route::get('employees/{employeeId}/sync-status', [EmployeeSyncController::class, 'status'])->whereNumber('employeeId')->name('api.v1.employees.sync-status');

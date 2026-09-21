@@ -30,6 +30,7 @@ class ScheduleWeekAssembler
         private readonly LaborCostCalculator $labor,
         private readonly EmployeePresenter $employees,
         private readonly StoreTimezoneResolver $timezones,
+        private readonly ActualShiftService $actuals,
     ) {
     }
 
@@ -164,33 +165,24 @@ class ScheduleWeekAssembler
 
     private function actualShiftDtos(Store $store, string $from, string $to, CarbonImmutable $weekStart, array $employeeIds): array
     {
+        // Presented by ActualShiftService, not here. This used to be a second
+        // copy of that method, and the two had already drifted — which is how a
+        // field could mean one thing in the week payload and another on the
+        // endpoint that wrote it.
+        //
+        // `segments` is eager-loaded because source() is derived from it, and a
+        // full week of actuals would otherwise be a query per row.
         return ActualShift::query()
+            ->with('segments')
             ->where('store_id', $store->id)
             ->whereDate('shift_date', '>=', $from)
             ->whereDate('shift_date', '<=', $to)
             ->get()
             ->filter(fn (ActualShift $actual) => in_array((string) $actual->employee_id, $employeeIds, true))
-            ->map(fn (ActualShift $actual) => [
-                'id' => (string) $actual->id,
-                'employee_id' => (string) $actual->employee_id,
-                'planned_shift_id' => $actual->shift_assignment_id === null
-                    ? null
-                    : (string) $actual->shift_assignment_id,
-                'shift_date' => $actual->shift_date?->toDateString(),
-                'day_index' => $this->weeks->dayIndexFor(CarbonImmutable::parse($actual->shift_date), $weekStart),
-                'start_time' => substr((string) $actual->start_time, 0, 5),
-                'end_time' => substr((string) $actual->end_time, 0, 5),
-                'duration_minutes' => (int) $actual->duration_minutes,
-                'label' => $actual->label,
-                'type' => $actual->shift_type,
-                // Pre-split string, kept so clients did not have to change when
-                // the two axes below replaced it. Prefer the axes in new work.
-                'status' => $actual->legacyStatus(),
-                'time_variance' => $actual->time_variance,
-                'review_state' => $actual->review_state,
-                'note' => $actual->note,
-                'source' => $actual->source,
-            ])
+            ->map(fn (ActualShift $actual) => $this->actuals->present(
+                $actual,
+                $this->weeks->dayIndexFor(CarbonImmutable::parse($actual->shift_date), $weekStart)
+            ))
             ->values()
             ->all();
     }

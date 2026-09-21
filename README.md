@@ -38,8 +38,12 @@ employees:  HiringPizza ──► TCP Manager+ ──(TCP connector, ~5 min)─�
 |---|---|
 | Humanity is called **before** the DB transaction opens (shifts) | Never hold a transaction across a network round trip. If persistence fails afterwards, the reconciler creates the mirror row — which is why it must be able to create, not only update. |
 | **Actual** shifts write through to **TCP**, the same way planned shifts write through to Humanity | Worked time is payroll data and TCP owns it, so a manager amending yesterday's hours on the dashboard has to reach TCP or it is not real. A local-only edit was silently reverted an hour later by `tcp:sync-worksegments`, which read TCP's unchanged value back over the top of it. Same ordering as shifts: guard → write TCP → mirror what TCP returned (it applies rounding we do not model). A failure rejects the request; no orphan row claims hours payroll cannot see. |
-| An actual shift has **two** status axes, not one | `time_variance` (matches/differs/unplanned) is DERIVED and recomputed freely by anything, including the TCP sync. `review_state` (unreviewed/worked/absent) is ASSERTED by a human and no background job may touch it. The old single `status` column conflated a comparison, a structural fact and a human verdict, which is why an edit could silently turn a no-show into "worked as planned" and why the sync and the review path kept disagreeing. The API still emits the old `status` string via `ActualShift::legacyStatus()`, so no client had to change. |
-| Two things on an actual shift stay **local** | An **absence** is the absence of worked time, and TCP has no segment for it — marking one DELETES the segment instead. And the link to the planned assignment is our concept; Humanity owns plans, TCP owns hours, and only this service joins them. A change to a local-only field (label, the plan link) spends no TCP call. |
+| An actual shift is a **roll-up over segments**, not one row per punch | Punching out and back in CLOSES a segment in TCP and OPENS another, so one shift routinely arrives as several. `actual_shifts` used to be 1:1 with a segment while `shift_assignment_id` was unique and overlap-matching mapped every segment of a split shift onto the same assignment — so the second segment could not be written at all. The raw punches now live in `tcp_work_segments`; `ActualShiftRollup` groups them by a gap threshold (`tcp.rollup.gap_minutes`, 60) into the shift a manager reviews. Anything wider is a genuine split shift, not a break. |
+| An actual shift has **derived** and **asserted** fields, and they never mix | DERIVED: `time_variance` (matches/differs/unplanned) and `needs_attention`, recomputed freely by anything including the sync. ASSERTED: `review_state` (unreviewed/worked/absent) and `grouping_pinned`, set only by a person and never touched by a background job. The old single `status` column conflated a comparison, a structural fact and a human verdict, which is why an edit could silently turn a no-show into "worked as planned". `needs_attention` is what lets `review_state` stay pure — a clean shift raises nothing, so nobody clicks through it. The pre-split `status` string is no longer emitted; read the axes. |
+| **TCP owns every time; we own everything TCP has no word for** | Times, durations and punches are recomputed from TCP on every pass and are never locally overridden. What is ours: the GROUPING (which segments form a shift — TCP stores segments and has no notion of a shift over them), the link to the planned assignment, the human verdict, the label and the manager's note. None of those can contradict TCP, which is why a manager may merge or split shifts and have it stick. A change to one of them spends no TCP call. |
+| An **absence** stays local | It is the absence of worked time, and TCP has no segment for it — marking one DELETES the segments instead, because leaving them would keep paying someone who never turned up. |
+| "On the clock" is an **open segment**, not a separate table | A segment with `time_out` NULL is somebody clocked in right now, so the board is one indexed query and costs no TCP call. There used to be an `employee_clock_states` table, which only `TcpClockService` ever wrote to — meaning a punch made at a physical clock or in TCP's own app never reached it, and `clock-status` could be wrong for fifteen minutes. The sync now persists open segments, so it is right wherever the punch was made. |
+| A shift in progress has **no end time** | `is_open` is set and `end_time`/`ends_at_utc` stay NULL; `duration_minutes` is minutes worked so far. Filling in "now" would make a running shift look finished, with an end that crept forward. Past `tcp.rollup.max_shift_hours` it stops accruing and raises `needs_attention` — it never invents an end, because only a real punch or a correction in TCP can close a segment. |
 | Accepting a clock-in **links**, never re-enters | The punch is the evidence — it carries the employee's real punch times and TCP's missed-punch flags. Attaching it to a planned shift only sets `shift_assignment_id`. Rewriting it as a manager-entered segment would destroy exactly the record a payroll dispute needs. |
 | Humanity is called **inside** the transaction (employees, in HiringPizza) | The opposite trade-off, chosen deliberately: a failed push must roll the employee back, and the payload can only be built after the child rows are written. |
 | Shifts store **both** wall-clock and UTC | Wall clock is what we display and what Humanity speaks; UTC is what every query, sort and overlap check uses. Comparing `TIME` columns breaks the moment a shift crosses midnight — and the store closes at 00:00, so that is routine. |
@@ -174,11 +178,33 @@ php artisan schedule:work
 | `humanity:sync-leave` | Mirrors Humanity leave into `time_off`. `--dry-run` supported. |
 | `humanity:sync-employees` | READ-ONLY: links local employees to Humanity records by TCP id (`eid` / username prefix). This is how `humanity_employee_id` gets populated. |
 | `tcp:sync-catalog` | Binds stores to TCP locations by name and mirrors the job-code catalog. `--check` for report-only. |
-| `tcp:sync-worksegments` | TCP worked hours → `actual_shifts`. `--dry-run` supported. |
+| `tcp:sync-worksegments` | TCP worked hours → `tcp_work_segments` → rolled up into `actual_shifts`. Delta-driven. `--dry-run` supported. |
+| `tcp:reconcile-worksegments` | Nightly truth pass. Re-reads the window ignoring the cursor and the changes gate, retires segments TCP no longer has, and reports people TCP says work here that we have no link for. `--dry-run`, `--days`, `--store`. |
 | `tcp:inspect-employees` | Read-only: TCP roster vs our links, coverage report. |
 | `tcp:quota` | What the 2500/day TCP quota is being spent on. |
 
 ## Safety model (both vendors are production-only)
+
+### What the worked-hours delta cannot do on its own
+
+`tcp:sync-worksegments` is a delta, and two things are structurally invisible to
+one. `tcp:reconcile-worksegments` exists for both, and is why it is scheduled
+nightly rather than offered as a repair tool.
+
+- **Deletions.** A segment voided in TCP simply stops being returned, which is
+  indistinguishable from "unchanged". Without a sweep, an orphan row is paid out
+  forever.
+- **The changes gate.** The delta skips a store when `/calculationchanges` names
+  none of its people. TCP does not document whether that feed reflects raw punch
+  inserts or only its own recalculations — the published spec says only
+  "employee time card changes" — so treating it as a gate risks dropping a
+  punch. Re-reading the window unconditionally bounds that risk to a day.
+- **Who is missing.** The delta filters on `employeeIds`, so TCP only returns
+  people we already knew to ask about. `GET /worksegments` has **no** location
+  filter (confirmed against TCP's OpenAPI spec: fifteen query parameters, none
+  of them location), so the store's own roster has to come from
+  `GET /employees?locations=` — one extra call per store, affordable nightly and
+  emphatically not on a ten-minute loop.
 
 Neither Humanity nor TCP has a sandbox — credentials always mean the live
 account. Four layers stand between a dev box and real data:
