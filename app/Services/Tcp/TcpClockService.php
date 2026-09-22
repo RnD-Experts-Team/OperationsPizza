@@ -47,6 +47,7 @@ class TcpClockService
         private readonly StoreTimezoneResolver $timezones,
         private readonly HumanitySyncLogger $syncLog,
         private readonly TcpWorkSegmentSync $workSegmentSync,
+        private readonly \App\Services\Scheduling\ActualShiftRollup $rollup,
     ) {
     }
 
@@ -99,13 +100,39 @@ class TcpClockService
             );
         }
 
-        return $this->send(
-            TcpPunch::clockOut($tcpEmployeeId, $at),
-            $store,
-            $employee,
-            'clock_out',
-            $request
-        );
+        try {
+            return $this->send(
+                TcpPunch::clockOut($tcpEmployeeId, $at),
+                $store,
+                $employee,
+                'clock_out',
+                $request
+            );
+        } catch (Exceptions\TcpException $e) {
+            /*
+             | TCP says they are not on the clock, and we thought they were.
+             |
+             | The live re-check above only guards the opposite case — local
+             | says no, TCP might say yes — so a local row TCP has since
+             | dropped reached here as a raw vendor 502, and the board went on
+             | offering a "Clock out" button that could only fail again.
+             |
+             | Observed live 2026-09-22. Reconcile rather than relay: retire the
+             | row we were wrong about and answer with the documented code.
+             */
+            if ($this->vendorSays($e, 'not clocked in')) {
+                $this->retireOpenSegments($store, $employee);
+
+                throw new SchedulingException(
+                    trim("{$employee->first_name} {$employee->last_name}") . ' is not clocked in.',
+                    'NOT_CLOCKED_IN',
+                    409,
+                    ['employee_id' => (string) $employee->id]
+                );
+            }
+
+            throw $e;
+        }
     }
 
     /** A break starts by CLOSING the worked segment — TCP models it as a timeOut. */
@@ -260,24 +287,121 @@ class TcpClockService
             return $segment;
         }
 
-        $anchor = CarbonImmutable::parse($segment->timeIn ?? $segment->timeOut ?? 'now');
+        /*
+         | Matched by NEAREST time, not by string equality.
+         |
+         | TCP records a punch under the account's rounding rules — that is the
+         | whole reason a segment carries `actualTimeIn` alongside `timeIn` —
+         | while the punch response echoes the time it was sent. So the two are
+         | equal only when no rounding applies, and comparing them as strings
+         | silently found nothing the moment a store had rounding switched on.
+         |
+         | The consequence was not a blank id, it was an invisible punch: an
+         | id-less segment is skipped by the mirror, so a clock-in that TCP
+         | accepted left no local row, put nobody on the on-the-clock board and
+         | created no shift in the grid. A clock-out left the shift open for
+         | ever. Observed live 2026-09-22.
+         */
+        $closing = $segment->timeOut !== null;
+        $anchorRaw = $closing ? $segment->timeOut : $segment->timeIn;
 
-        foreach ($this->tcp->listWorkSegments($anchor->subHour(), $anchor->addHour(), [$segment->employeeId]) as $candidate) {
-            $matchesIn = $segment->timeIn === null || $candidate->timeIn === $segment->timeIn;
-            $matchesOut = $segment->timeOut === null || $candidate->timeOut === $segment->timeOut;
+        if ($anchorRaw === null) {
+            return $segment;
+        }
 
-            if ($candidate->employeeId === $segment->employeeId && $matchesIn && $matchesOut) {
-                return $candidate;
+        $anchor = CarbonImmutable::parse($anchorRaw);
+
+        /*
+         | A segment is listed by when it STARTED, so the window has to reach
+         | back far enough to contain that start — not just the punch. Closing
+         | a shift at 17:06 must still find the segment that opened at 09:00,
+         | so a closing punch looks back a whole shift's maximum length.
+         */
+        $from = $closing
+            ? $anchor->subHours((int) config('tcp.rollup.max_shift_hours', 16) + 1)
+            : $anchor->subHour();
+
+        $best = null;
+        $bestDistance = null;
+
+        foreach ($this->tcp->listWorkSegments($from, $anchor->addHour(), [$segment->employeeId]) as $candidate) {
+            if ((string) $candidate->employeeId !== (string) $segment->employeeId || $candidate->id === '') {
+                continue;
+            }
+
+            // A clock-in leaves a segment OPEN; anything that closes one leaves
+            // it closed. That alone rules out the neighbouring shift a nearby
+            // punch would otherwise match against.
+            if ($closing === $candidate->isOpen()) {
+                continue;
+            }
+
+            $recorded = $closing ? $candidate->timeOut : $candidate->timeIn;
+
+            if ($recorded === null) {
+                continue;
+            }
+
+            $distance = abs(CarbonImmutable::parse($recorded)->getTimestamp() - $anchor->getTimestamp());
+
+            if ($bestDistance === null || $distance < $bestDistance) {
+                $best = $candidate;
+                $bestDistance = $distance;
             }
         }
 
-        Log::warning('Could not backfill a TCP work segment id after a punch', [
+        if ($best !== null) {
+            return $best;
+        }
+
+        // Not a cosmetic failure: without an id nothing is mirrored, so the
+        // punch is invisible here until the next sync reconciles it.
+        Log::error('Could not match a TCP punch to the segment it created', [
             'employee_id' => $segment->employeeId,
             'time_in' => $segment->timeIn,
             'time_out' => $segment->timeOut,
         ]);
 
         return $segment;
+    }
+
+    /** Does the vendor's own message say this? Their wording, not a code. */
+    private function vendorSays(\Throwable $e, string $needle): bool
+    {
+        return str_contains(strtolower($e->getMessage()), strtolower($needle));
+    }
+
+    /**
+     * Drop open rows TCP has contradicted, and settle the shifts holding them.
+     *
+     * Soft-deleted, exactly as the nightly reconcile retires a segment TCP no
+     * longer has — the row is evidence of what we believed, and the roll-up
+     * needs to see it go rather than find it simply absent.
+     */
+    private function retireOpenSegments(Store $store, Employee $employee): void
+    {
+        $open = WorkSegmentRow::query()
+            ->where('employee_id', $employee->id)
+            ->where('store_id', $store->id)
+            ->open()
+            ->get();
+
+        if ($open->isEmpty()) {
+            return;
+        }
+
+        foreach ($open as $segment) {
+            $segment->delete();
+        }
+
+        try {
+            $this->rollup->rebuild($store, $employee, CarbonImmutable::parse($open->first()->starts_at_utc));
+        } catch (\Throwable $e) {
+            Log::warning('Failed to settle shifts after retiring a contradicted segment', [
+                'employee_id' => $employee->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     private function requireTcpLink(Employee $employee): string

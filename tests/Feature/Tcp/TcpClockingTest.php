@@ -168,6 +168,90 @@ class TcpClockingTest extends TestCase
         $this->assertTrue($segment->isOpen());
     }
 
+    /**
+     * OBSERVED LIVE 2026-09-22 against a real store: a clock-in returned 201
+     * with `work_segment_id: ""`, and the employee then appeared NOWHERE — not
+     * on the on-the-clock board, not as a shift in the grid. The punch reached
+     * TCP; nothing reached us.
+     *
+     * The cause is that TCP records a punch under its own ROUNDED time while
+     * the punch response echoes the raw one, so matching the two by string
+     * equality never finds the segment. The id stays blank, and a blank id is
+     * silently dropped by the mirror — so a successful punch leaves no trace.
+     */
+    public function test_a_punch_recorded_under_a_rounded_time_is_still_found_and_mirrored(): void
+    {
+        $this->tcp->roundPunchesToMinutes = 15;
+
+        $segment = $this->clock()->clockIn($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 08:54:27', 'America/Chicago'));
+
+        $this->assertNotSame('', $segment->id, 'the punch must be matched to the segment TCP recorded, however it rounded it');
+
+        $this->assertDatabaseHas('tcp_work_segments', [
+            'employee_id' => 501,
+            'tcp_work_segment_id' => $segment->id,
+        ]);
+
+        // The promise the API documentation makes: the shift exists as soon as
+        // somebody clocks in, rather than at the next sync.
+        $shift = ActualShift::sole();
+        $this->assertTrue($shift->is_open);
+        $this->assertNull($shift->end_time);
+
+        // And the board a manager watches has to show them.
+        $this->assertTrue(
+            $this->clock()->onTheClock($this->store)->contains(fn (WorkSegmentRow $s) => $s->employee_id === 501),
+            'somebody who just clocked in must appear on the on-the-clock board'
+        );
+    }
+
+    /** The same rounding, on the way back out: the close must find its segment. */
+    public function test_a_clock_out_recorded_under_a_rounded_time_still_closes_the_shift(): void
+    {
+        $this->tcp->roundPunchesToMinutes = 15;
+
+        $this->clock()->clockIn($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 09:02:11', 'America/Chicago'));
+        $this->clock()->clockOut($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 17:06:48', 'America/Chicago'));
+
+        $shift = ActualShift::sole();
+
+        $this->assertFalse($shift->is_open, 'a clocked-out shift must not still read as in progress');
+        $this->assertNotNull($shift->end_time);
+        $this->assertSame(0, $this->clock()->onTheClock($this->store)->count());
+    }
+
+    /**
+     * Our row says they are on the clock; TCP says they are not.
+     *
+     * Observed live 2026-09-22: a stale open row left the board offering a
+     * "Clock out" button, and pressing it returned a raw vendor 502 —
+     * "TCP punch failed: The crew member is not clocked in" — leaving the row
+     * in place so the button could only fail again. The live re-check guards
+     * the opposite case only.
+     */
+    public function test_a_local_row_tcp_contradicts_is_retired_rather_than_relayed(): void
+    {
+        // On the clock as far as we know.
+        $this->clock()->clockIn($this->store, $this->employee, CarbonImmutable::now()->subHours(2));
+        $this->assertSame(1, $this->clock()->onTheClock($this->store)->count());
+
+        // ...but TCP has no open segment for them any more.
+        $this->tcp->segments = [];
+        $this->tcp->failNext('punch', new TcpException('TCP punch failed: The crew member is not clocked in'));
+
+        try {
+            $this->clock()->clockOut($this->store, $this->employee);
+            $this->fail('a clock-out TCP refuses must not be reported as success');
+        } catch (SchedulingException $e) {
+            $this->assertSame('NOT_CLOCKED_IN', $e->errorCode);
+            $this->assertSame(409, $e->statusCode);
+        }
+
+        // The belief we were wrong about is gone, so the board stops offering
+        // an action that cannot work.
+        $this->assertSame(0, $this->clock()->onTheClock($this->store)->count());
+    }
+
     public function test_clock_out_automatically_mirrors_into_actual_shifts(): void
     {
         $this->clock()->clockIn($this->store, $this->employee, CarbonImmutable::parse('2026-08-06 09:00', 'America/Chicago'));

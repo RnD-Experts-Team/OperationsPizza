@@ -48,6 +48,17 @@ class FakeTcpClient implements TcpClientInterface
      */
     public bool $omitIdOnPunch = true;
 
+    /**
+     * Minutes TCP rounds a punch to when it STORES the segment, 0 for none.
+     *
+     * Real TCP applies the account's rounding rules, which is the entire reason
+     * a segment carries both `timeIn` (recorded, rounded) and `actualTimeIn`
+     * (what was physically punched). The punch response echoes the raw time, so
+     * the recorded time it later reads back under is NOT the one it was sent —
+     * and anything matching the two by string equality finds nothing.
+     */
+    public int $roundPunchesToMinutes = 0;
+
     private int $nextSegmentId = 5000;
 
     private array $failures = [];
@@ -138,7 +149,7 @@ class FakeTcpClient implements TcpClientInterface
 
         foreach ($punches as $punch) {
             $segment = $this->applyPunch($punch);
-            $result[] = $this->omitIdOnPunch ? $this->withoutId($segment) : $segment;
+            $result[] = $this->omitIdOnPunch ? $this->withoutId($segment, $punch) : $segment;
         }
 
         $this->calls[] = ['op' => 'punch', 'args' => ['count' => count($punches)]];
@@ -150,15 +161,25 @@ class FakeTcpClient implements TcpClientInterface
      * The RESPONSE with its id stripped — what applyPunch() stored in
      * $this->segments keeps the real id, exactly like real TCP: the id is
      * discoverable via listWorkSegments(), just not in the punch response.
+     *
+     * The response also echoes the time it was SENT, not the time TCP recorded
+     * it under. Observed live 2026-09-22: a punch at 08:54:27 came back as
+     * 08:54:27 with `actualTimeIn` empty, while the segment it created reads
+     * back under the account's rounded time. The two are only equal when no
+     * rounding applies, which is why matching them by string equality looked
+     * correct for so long.
      */
-    private function withoutId(TcpWorkSegment $segment): TcpWorkSegment
+    private function withoutId(TcpWorkSegment $segment, ?TcpPunch $punch = null): TcpWorkSegment
     {
+        $sentIn = $punch?->timeIn?->format('Y-m-d\TH:i:s');
+        $sentOut = $punch?->timeOut?->format('Y-m-d\TH:i:s');
+
         return new TcpWorkSegment(
             id: '',
             employeeId: $segment->employeeId,
             jobCodeId: $segment->jobCodeId,
-            timeIn: $segment->timeIn,
-            timeOut: $segment->timeOut,
+            timeIn: $sentIn ?? $segment->timeIn,
+            timeOut: $sentOut ?? $segment->timeOut,
             actualTimeIn: $segment->actualTimeIn,
             actualTimeOut: $segment->actualTimeOut,
             missedInPunch: $segment->missedInPunch,
@@ -197,13 +218,30 @@ class FakeTcpClient implements TcpClientInterface
             id: $id,
             employeeId: $punch->employeeId,
             jobCodeId: $punch->jobCodeId,
-            timeIn: $punch->timeIn?->format('Y-m-d\TH:i:s'),
+            timeIn: $this->recorded($punch->timeIn),
             timeOut: null,
             actualTimeIn: $punch->timeIn?->format('Y-m-d\TH:i:s'),
             updatedOn: CarbonImmutable::now()->format('Y-m-d\TH:i:s'),
         );
 
         return $this->segments[$id] = $segment;
+    }
+
+    /** The time TCP RECORDS for a punch, once the account's rounding applies. */
+    private function recorded(?DateTimeInterface $at): ?string
+    {
+        if ($at === null) {
+            return null;
+        }
+
+        $at = CarbonImmutable::instance($at);
+
+        if ($this->roundPunchesToMinutes > 0) {
+            $step = $this->roundPunchesToMinutes * 60;
+            $at = $at->setTimestamp((int) (round($at->getTimestamp() / $step) * $step));
+        }
+
+        return $at->format('Y-m-d\TH:i:s');
     }
 
     private function closeSegment(TcpPunch $punch, ?TcpWorkSegment $open): TcpWorkSegment
@@ -219,7 +257,7 @@ class FakeTcpClient implements TcpClientInterface
             employeeId: $open->employeeId,
             jobCodeId: $open->jobCodeId,
             timeIn: $open->timeIn,
-            timeOut: $punch->timeOut?->format('Y-m-d\TH:i:s'),
+            timeOut: $this->recorded($punch->timeOut),
             actualTimeIn: $open->actualTimeIn,
             actualTimeOut: $punch->timeOut?->format('Y-m-d\TH:i:s'),
             missedInPunch: $open->missedInPunch,

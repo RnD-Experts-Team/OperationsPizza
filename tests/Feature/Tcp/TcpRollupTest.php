@@ -219,6 +219,41 @@ class TcpRollupTest extends TestCase
     }
 
     /**
+     * The production shape of the in-progress case: a DELTA sync, run more than
+     * once while the person is still on the clock.
+     *
+     * Observed live 2026-09-22: two people sat on the on-the-clock board for 44
+     * minutes and 21 HOURS respectively, and neither had a shift in the grid —
+     * so a manager reviewing the week could not see them at all. The delta path
+     * is what runs on a schedule; the existing coverage only ever exercised a
+     * full sync, which is not what production does.
+     */
+    public function test_a_repeated_delta_sync_keeps_an_in_progress_shift_in_the_grid(): void
+    {
+        CarbonImmutable::setTestNow('2026-08-06 17:00:00');
+
+        $this->seedSegment('A', '2026-08-06T09:00:00', null);
+
+        $delta = fn () => app(TcpWorkSegmentSync::class)->sync($this->store);
+
+        $delta();
+
+        $first = ActualShift::sole();
+        $this->assertTrue($first->is_open, 'a shift being worked must reach the grid, not only the on-the-clock board');
+
+        // Still on the clock when the next scheduled round comes past.
+        CarbonImmutable::setTestNow('2026-08-06 18:00:00');
+        $delta();
+
+        $second = ActualShift::sole();
+        $this->assertSame($first->id, $second->id, 'the same shift, not a duplicate');
+        $this->assertTrue($second->is_open);
+        $this->assertNull($second->end_time);
+        // 09:00 America/Chicago is 14:00 UTC, so an hour later is four worked.
+        $this->assertSame(240, $second->duration_minutes, 'it should still be accruing');
+    }
+
+    /**
      * Somebody forgot to clock out. The shift must stop accruing and say so
      * rather than grow into a forty-hour figure — but it must NOT be given an
      * end time, because only a real punch or a correction in TCP can close it.
