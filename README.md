@@ -183,6 +183,45 @@ php artisan schedule:work
 | `tcp:inspect-employees` | Read-only: TCP roster vs our links, coverage report. |
 | `tcp:quota` | What the 2500/day TCP quota is being spent on. |
 
+## Staffing history (`GET /v1/stores/{storeId}/schedule/insights`)
+
+What the schedule builder shows a manager next to hourly sales: how many people
+were **actually on the clock** each hour, per weekday, over a window of business
+weeks. The sales half is `GET /api/reports/scheduling-insights/{store}` in
+LC_PIZZA_DATA; the dashboard merges the two.
+
+| Query | Notes |
+|---|---|
+| `start_date`, `end_date` | `YYYY-MM-DD`, both or neither. Without them: the four complete business weeks before the week containing today (store timezone, store week start). |
+
+- **Source:** `tcp_work_segments` (what TCP recorded), never the plan. Open segments
+  (someone on the clock now) are skipped; a segment is capped at
+  `tcp.rollup.max_shift_hours`. The plan is returned beside it as
+  `scheduled_headcount` (only `assigned` people, not open or released slots).
+- **Hours** are store-local. The first hour of a business day is worked out from the
+  store's own hours (the middle of the time it is closed, e.g. closed 00:00-09:00 gives
+  05:00; 05:00 if it is never closed), and time before it belongs to the **previous
+  business date**, the same rule the sales table uses, so the two line up hour for hour.
+- **Days that count:** a business date with no worked time at all is skipped and does
+  not count towards that weekday's average (`skipped_dates`). On a date that counts,
+  an hour nobody worked is a real 0.
+- **Odd weeks are flagged, not hidden, and nothing is configured.** Each week's value is
+  compared with the median of the *other* weeks and is a `spike` or `dip` when it is far
+  off compared with how much those weeks normally move (a steady hour flags on a small
+  change, a jumpy one needs a big one) and big compared with the store's own busiest
+  hour, so small absolute differences never flag. If most weeks would flag, the hour is
+  `volatile` instead. Every figure carries `avg` (all weeks) and `typical` (flagged weeks
+  left out), and `anomalies` lists the flagged ones.
+- **Per hour:** `headcount` (avg people on the clock, with low/high), `scheduled_headcount`,
+  `by_job` (average people per job label, e.g. how much of the hour had a Manager).
+  **Per day:** `labor_hours`, `labor_cost` (worked hours x `employees.hourly_rate`, falling
+  back to the store default rate), `employees_worked`.
+- Cached per store and window for 10 minutes. Covered by the existing pizzasys rule
+  `GET /v1/stores/{storeId}/**` (`view schedule` / `manage schedule`).
+
+Code: `Services/Scheduling/StaffingHistoryService`, `Support/HourlyCoverage` (hour
+bucketing, DST-safe), `Support/OutlierDetector`.
+
 ## Safety model (both vendors are production-only)
 
 ### What the worked-hours delta cannot do on its own

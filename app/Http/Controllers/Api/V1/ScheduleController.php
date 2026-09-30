@@ -7,7 +7,11 @@ use App\Http\Controllers\Api\V1\Concerns\ResolvesStore;
 use App\Services\Scheduling\EmployeePresenter;
 use App\Services\Scheduling\LaborCostCalculator;
 use App\Services\Scheduling\ScheduleWeekAssembler;
+use App\Services\Scheduling\StaffingHistoryService;
+use App\Services\Scheduling\StoreTimezoneResolver;
+use App\Services\Scheduling\WeekResolver;
 use App\Models\Employee;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -19,6 +23,9 @@ class ScheduleController extends Controller
         private readonly ScheduleWeekAssembler $assembler,
         private readonly EmployeePresenter $employees,
         private readonly LaborCostCalculator $labor,
+        private readonly StaffingHistoryService $staffingHistory,
+        private readonly StoreTimezoneResolver $timezones,
+        private readonly WeekResolver $weeks,
     ) {
     }
 
@@ -45,6 +52,35 @@ class ScheduleController extends Controller
                 $validated
             ),
         ]);
+    }
+
+    /**
+     * Staffing history for the schedule builder: how many people were actually
+     * on the clock each hour, per weekday, over a window of business weeks.
+     *
+     * Without start_date/end_date the window is the four complete business
+     * weeks before the week that contains today (in the store's timezone).
+     */
+    public function insights(Request $request, string $storeId): JsonResponse
+    {
+        $validated = $request->validate([
+            'start_date' => ['nullable', 'date_format:Y-m-d', 'required_with:end_date'],
+            'end_date' => ['nullable', 'date_format:Y-m-d', 'required_with:start_date', 'after_or_equal:start_date'],
+        ]);
+
+        $store = $this->resolveStore($storeId);
+
+        if (isset($validated['start_date'])) {
+            $start = CarbonImmutable::parse($validated['start_date'])->startOfDay();
+            $end = CarbonImmutable::parse($validated['end_date'])->startOfDay();
+        } else {
+            $today = CarbonImmutable::now($this->timezones->for($store))->startOfDay();
+            $thisWeek = $this->weeks->weekStartFor($today, $this->weeks->weekStartDow($store->settings()));
+            $start = $thisWeek->subDays(28);
+            $end = $thisWeek->subDay();
+        }
+
+        return response()->json(['data' => $this->staffingHistory->build($store, $start, $end)]);
     }
 
     /** Roster only, for pickers that don't need a whole week. */

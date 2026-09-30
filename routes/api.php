@@ -31,6 +31,7 @@ Route::prefix('v1')->middleware('auth.token.store')->group(function (): void {
         Route::get('schedule/week', [ScheduleController::class, 'week'])->name('api.v1.schedule.week');
         Route::get('schedule/employees', [ScheduleController::class, 'employees'])->name('api.v1.schedule.employees');
         Route::get('schedule/departments', [ScheduleController::class, 'departments'])->name('api.v1.schedule.departments');
+        Route::get('schedule/insights', [ScheduleController::class, 'insights'])->name('api.v1.schedule.insights');
 
         // ---- planned shifts (write-through to Humanity) ---------------------
         Route::post('shifts', [ShiftController::class, 'store'])->name('api.v1.shifts.store');
