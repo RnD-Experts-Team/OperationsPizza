@@ -24,16 +24,16 @@ class EmployeeSyncController extends Controller
 
     public function status(string $storeId, int $employeeId): JsonResponse
     {
-        $this->resolveStore($storeId);
+        $store = $this->resolveStore($storeId);
 
-        return response()->json(['data' => $this->syncRequests->statusFor($this->findEmployee($employeeId))]);
+        return response()->json(['data' => $this->syncRequests->statusFor($this->findEmployee((string) $store->store_number, $employeeId))]);
     }
 
     /** Manual retry. 202 because HiringPizza does the actual work, over NATS. */
     public function request(Request $request, string $storeId, int $employeeId): JsonResponse
     {
         $store = $this->resolveStore($storeId);
-        $employee = $this->findEmployee($employeeId);
+        $employee = $this->findEmployee((string) $store->store_number, $employeeId);
 
         // This action's only effect is asking HiringPizza to push to TCP —
         // checking Humanity linkage here would keep re-firing that push after
@@ -48,12 +48,19 @@ class EmployeeSyncController extends Controller
         return response()->json(['data' => $this->syncRequests->statusFor($employee->fresh())], 202);
     }
 
-    private function findEmployee(int $employeeId): Employee
+    /**
+     * pizzasys only checked the caller against the store in the path, so the
+     * employee must belong to that store too — otherwise a manager of one
+     * store could read or trigger the sync of anyone.
+     */
+    private function findEmployee(string $storeNumber, int $employeeId): Employee
     {
-        $employee = Employee::query()->find($employeeId);
+        $employee = Employee::query()
+            ->assignedToStore($storeNumber)
+            ->find($employeeId);
 
         if ($employee === null) {
-            throw new NotFoundHttpException("Employee {$employeeId} not found.");
+            throw new NotFoundHttpException("Employee {$employeeId} is not assigned to store {$storeNumber}.");
         }
 
         return $employee;

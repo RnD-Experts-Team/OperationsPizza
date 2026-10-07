@@ -349,6 +349,19 @@ class ScheduleApiTest extends TestCase
             ->assertJsonPath('data.humanity_employee_id', '88213');
     }
 
+    public function test_sync_endpoints_refuse_an_employee_from_another_store(): void
+    {
+        Store::query()->create(['id' => 2, 'store_number' => '03759-00002', 'name' => 'Uptown', 'timezone' => 'America/Chicago']);
+
+        // 501 works at 03759-00001 only; a manager of 03759-00002 must not reach them.
+        $this->getJson('/api/v1/stores/03759-00002/employees/501/sync-status', $this->headers())
+            ->assertNotFound();
+        $this->postJson('/api/v1/stores/03759-00002/employees/501/humanity-sync', [], $this->headers())
+            ->assertNotFound();
+
+        $this->assertSame(0, \App\Models\EmployeeSyncRequest::query()->count());
+    }
+
     public function test_an_availability_override_can_be_deleted_by_its_raw_id(): void
     {
         $override = \App\Models\ScheduleAvailabilityOverride::query()->create([
