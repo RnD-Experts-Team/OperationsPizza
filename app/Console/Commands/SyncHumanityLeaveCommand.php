@@ -24,7 +24,8 @@ class SyncHumanityLeaveCommand extends Command
     protected $signature = 'humanity:sync-leave
         {--store= : store_number; omit for every mapped store}
         {--from= : YYYY-MM-DD}
-        {--to= : YYYY-MM-DD}';
+        {--to= : YYYY-MM-DD}
+        {--dry-run : Count what would change without touching time_off}';
 
     protected $description = 'Sync Humanity leave/time-off into the local mirror';
 
@@ -40,6 +41,8 @@ class SyncHumanityLeaveCommand extends Command
 
     public function handle(HumanityClientInterface $humanity, HumanityDateFormatter $dates): int
     {
+        $dryRun = (bool) $this->option('dry-run');
+
         $from = CarbonImmutable::parse(
             $this->option('from') ?? now()->subDays((int) config('humanity.reconcile.days_back', 7))->toDateString()
         );
@@ -95,34 +98,37 @@ class SyncHumanityLeaveCommand extends Command
                     continue;
                 }
 
-                TimeOff::query()->updateOrCreate(
-                    ['humanity_leave_id' => $humanityLeaveId],
-                    [
-                        'store_id' => $store->id,
-                        'employee_id' => $employeeId,
-                        'start_date' => $start,
-                        'end_date' => $end,
-                        'all_day' => true,
-                        'type' => $this->mapType($row),
-                        'label' => $this->stringOrNull($row['name'] ?? $row['type'] ?? null),
-                        'status' => $this->mapStatus($row),
-                        'note' => $this->stringOrNull($row['notes'] ?? null),
-                        'origin' => 'humanity',
-                    ]
-                );
+                if (!$dryRun) {
+                    TimeOff::query()->updateOrCreate(
+                        ['humanity_leave_id' => $humanityLeaveId],
+                        [
+                            'store_id' => $store->id,
+                            'employee_id' => $employeeId,
+                            'start_date' => $start,
+                            'end_date' => $end,
+                            'all_day' => true,
+                            'type' => $this->mapType($row),
+                            'label' => $this->stringOrNull($row['name'] ?? $row['type'] ?? null),
+                            'status' => $this->mapStatus($row),
+                            'note' => $this->stringOrNull($row['notes'] ?? null),
+                            'origin' => 'humanity',
+                        ]
+                    );
+                }
 
                 $seen[] = $humanityLeaveId;
             }
 
             // Leave withdrawn in Humanity must stop blocking the grid here.
-            $removed = DB::transaction(function () use ($store, $from, $to, $seen) {
-                return TimeOff::query()
-                    ->where('store_id', $store->id)
-                    ->where('origin', 'humanity')
-                    ->overlappingDates($from->toDateString(), $to->toDateString())
-                    ->when($seen !== [], fn ($q) => $q->whereNotIn('humanity_leave_id', $seen))
-                    ->delete();
-            });
+            $removalQuery = fn () => TimeOff::query()
+                ->where('store_id', $store->id)
+                ->where('origin', 'humanity')
+                ->overlappingDates($from->toDateString(), $to->toDateString())
+                ->when($seen !== [], fn ($q) => $q->whereNotIn('humanity_leave_id', $seen));
+
+            $removed = $dryRun
+                ? $removalQuery()->count()
+                : DB::transaction(fn () => $removalQuery()->delete());
 
             $this->line(sprintf(
                 '%s: %d synced, %d removed, %d skipped (no employee link)',
@@ -131,6 +137,10 @@ class SyncHumanityLeaveCommand extends Command
                 $removed,
                 $skipped
             ));
+        }
+
+        if ($dryRun) {
+            $this->comment('Dry run — nothing was written.');
         }
 
         return self::SUCCESS;

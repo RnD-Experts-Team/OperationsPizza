@@ -28,10 +28,16 @@ class StoreCreatedHandler implements EventHandlerInterface
         }
 
         $name = $this->stringOrNull(data_get($storePayload, 'name'));
-        $isActive = data_get($storePayload, 'is_active');
-        $timezone = $this->resolveTimezone(data_get($storePayload, 'metadata'), $storeNumber);
 
-        DB::transaction(function () use ($id, $storeNumber, $name, $isActive, $timezone) {
+        // NOTE: pizzasys also sends is_active and (sometimes) a metadata
+        // timezone. We deliberately store neither.
+        //   - is_active: an inactive store simply stops receiving traffic;
+        //     nothing here branches on it, and a stale copy would only ever
+        //     disagree with pizzasys.
+        //   - timezone: sourced from the mapped Humanity location instead
+        //     (see StoreTimezoneResolver), because that is the timezone
+        //     Humanity actually interprets our shift times in.
+        DB::transaction(function () use ($id, $storeNumber, $name) {
             $store = Store::withTrashed()->find($id);
 
             if ($store === null) {
@@ -39,20 +45,15 @@ class StoreCreatedHandler implements EventHandlerInterface
                     'id' => $id,
                     'store_number' => $storeNumber,
                     'name' => $name,
-                    'timezone' => $timezone,
-                    'is_active' => $isActive === null ? true : (bool) $isActive,
                 ]);
 
                 return;
             }
 
-            // Redelivery or a re-created store: refresh identity but never
-            // clobber a timezone an operator may have corrected by hand — the
-            // event is not authoritative for it (see ReplicatesStores).
+            // Redelivery or a re-created store: refresh identity.
             $store->fill([
                 'store_number' => $storeNumber,
                 'name' => $name,
-                'is_active' => $isActive === null ? true : (bool) $isActive,
             ]);
 
             if ($store->trashed()) {

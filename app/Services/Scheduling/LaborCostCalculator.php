@@ -2,33 +2,41 @@
 
 namespace App\Services\Scheduling;
 
-use App\Models\EmployeePayHistory;
+use App\Models\Employee;
 use App\Models\StoreScheduleSetting;
 use Illuminate\Support\Collection;
 
 /**
- * Real labor cost from the replicated pay history, replacing the hardcoded $15
- * the prototype grid uses.
+ * Labor cost from the employee's current wage.
  *
- * The rate is whichever pay row was effective ON the shift date — not the
- * latest one — so a raise doesn't retroactively rewrite last month's cost.
+ * We keep one rate per employee rather than HiringPizza's pay history — pay
+ * history is HR data, and this service only ever needs "what does an hour of
+ * this person cost". The rate is refreshed whenever an employee event lands.
+ *
+ * Consequence, and it is deliberate: costing is no longer date-effective. A
+ * raise re-costs previously scheduled weeks at the new rate, where the old
+ * pay-history lookup would have kept them at the rate in force on the day.
+ * `$onDate` is therefore accepted but unused — kept so callers (and the API
+ * shape) do not have to change if history ever comes back.
  */
 class LaborCostCalculator
 {
-    /** @var array<int, array<int, array{date:string, rate:float}>> */
-    private array $historyCache = [];
+    /** @var array<int, float|null> */
+    private array $rateCache = [];
 
     public function rateFor(int $employeeId, string $onDate, ?StoreScheduleSetting $settings = null): float
     {
-        $history = $this->historyFor($employeeId);
-
-        foreach ($history as $row) {
-            if ($row['date'] <= $onDate) {
-                return $row['rate'];
-            }
+        if (!array_key_exists($employeeId, $this->rateCache)) {
+            $this->rateCache[$employeeId] = $this->lookup([$employeeId])[$employeeId] ?? null;
         }
 
-        // No pay row effective yet (e.g. a brand-new hire) — fall back to the
+        $rate = $this->rateCache[$employeeId];
+
+        if ($rate !== null) {
+            return $rate;
+        }
+
+        // No wage replicated yet (e.g. a brand-new hire) — fall back to the
         // store default rather than reporting a zero-cost schedule.
         $fallback = $settings?->default_labor_rate_cents;
 
@@ -45,42 +53,27 @@ class LaborCostCalculator
         }, 0.0), 2);
     }
 
-    /** Newest-first, so the first row whose date has passed is the effective one. */
-    private function historyFor(int $employeeId): array
-    {
-        if (!isset($this->historyCache[$employeeId])) {
-            $this->historyCache[$employeeId] = EmployeePayHistory::query()
-                ->where('employee_id', $employeeId)
-                ->orderByDesc('effective_date')
-                ->orderByDesc('id')
-                ->get()
-                ->map(fn (EmployeePayHistory $row) => [
-                    'date' => $row->effective_date?->toDateString() ?? '0000-00-00',
-                    'rate' => (float) $row->base_pay,
-                ])
-                ->all();
-        }
-
-        return $this->historyCache[$employeeId];
-    }
-
     /** Warm the cache for a whole roster in one query. */
     public function preload(array $employeeIds): void
     {
-        $rows = EmployeePayHistory::query()
-            ->whereIn('employee_id', $employeeIds)
-            ->orderByDesc('effective_date')
-            ->orderByDesc('id')
-            ->get()
-            ->groupBy('employee_id');
+        $rates = $this->lookup($employeeIds);
 
         foreach ($employeeIds as $employeeId) {
-            $this->historyCache[$employeeId] = ($rows[$employeeId] ?? collect())
-                ->map(fn (EmployeePayHistory $row) => [
-                    'date' => $row->effective_date?->toDateString() ?? '0000-00-00',
-                    'rate' => (float) $row->base_pay,
-                ])
-                ->all();
+            $this->rateCache[(int) $employeeId] = $rates[(int) $employeeId] ?? null;
         }
+    }
+
+    /** @return array<int, float|null> */
+    private function lookup(array $employeeIds): array
+    {
+        if ($employeeIds === []) {
+            return [];
+        }
+
+        return Employee::query()
+            ->whereIn('id', $employeeIds)
+            ->pluck('hourly_rate', 'id')
+            ->map(fn ($rate) => $rate === null ? null : (float) $rate)
+            ->all();
     }
 }

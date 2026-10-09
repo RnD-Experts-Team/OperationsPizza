@@ -4,8 +4,7 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-return new class extends Migration
-{
+return new class extends Migration {
     /**
      * Run the migrations.
      */
@@ -18,13 +17,6 @@ return new class extends Migration
 
             $table->string('name');
             $table->string('email')->unique();
-            $table->timestamp('email_verified_at')->nullable();
-
-            // No password / rememberToken: authentication is entirely remote
-            // (pizzasys mints the Sanctum token, AuthTokenStoreScopeMiddleware
-            // verifies it). There is nothing here to authenticate against, and
-            // storing a credential we never check is a liability.
-            $table->boolean('is_active')->default(true)->index();
 
             $table->timestamps();
         });

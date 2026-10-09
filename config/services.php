@@ -28,13 +28,6 @@ return [
         'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
     ],
 
-    'slack' => [
-        'notifications' => [
-            'bot_user_oauth_token' => env('SLACK_BOT_USER_OAUTH_TOKEN'),
-            'channel' => env('SLACK_BOT_USER_DEFAULT_CHANNEL'),
-        ],
-    ],
-
     /*
     |--------------------------------------------------------------------------
     | pizzasys auth server
@@ -56,10 +49,9 @@ return [
         'verify_path' => env('AUTH_SERVER_VERIFY_PATH', '/api/v1/auth/token/verify'),
         'service_name' => env('AUTH_SERVER_SERVICE_NAME', 'Operations'),
         'call_token' => env('AUTH_SERVER_CALL_TOKEN', ''),
-        'timeout' => (int) env('AUTH_SERVER_TIMEOUT', 3),
-        'retries' => (int) env('AUTH_SERVER_RETRIES', 1),
-        'retry_ms' => (int) env('AUTH_SERVER_RETRY_MS', 100),
-        'cache_ttl' => (int) env('AUTH_SERVER_CACHE_TTL', 30),
+        'timeout' => 3,
+        'retries' => 1,
+        'retry_ms' => 100,
     ],
 
 ];

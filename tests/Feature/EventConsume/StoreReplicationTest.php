@@ -42,8 +42,6 @@ class StoreReplicationTest extends TestCase
         // it is the {storeId} segment in our API routes.
         $this->assertSame('03759-00001', $store->store_number);
         $this->assertSame('Downtown', $store->name);
-        $this->assertSame('America/New_York', $store->timezone);
-        $this->assertTrue($store->is_active);
     }
 
     public function test_it_keeps_the_pizzasys_id_instead_of_auto_incrementing(): void
@@ -53,26 +51,22 @@ class StoreReplicationTest extends TestCase
         $this->assertSame(907, Store::sole()->id);
     }
 
-    public function test_it_falls_back_to_the_default_timezone_when_metadata_has_none(): void
+    public function test_it_ignores_the_fields_we_deliberately_do_not_store(): void
     {
-        app(StoreCreatedHandler::class)->handle($this->createdEvent(['metadata' => null]));
+        // pizzasys sends is_active and a metadata timezone; we store neither.
+        // is_active lives in pizzasys (consulted on every request), and the
+        // scheduling timezone comes from the mapped Humanity location, because
+        // that is what Humanity interprets our shift times in.
+        app(StoreCreatedHandler::class)->handle($this->createdEvent([
+            'is_active' => false,
+            'metadata' => ['timezone' => 'America/New_York'],
+        ]));
 
-        $this->assertSame(
-            config('operations.default_timezone'),
-            Store::find(42)->timezone
-        );
-    }
+        $store = Store::find(42);
 
-    public function test_it_ignores_an_invalid_timezone_in_metadata(): void
-    {
-        app(StoreCreatedHandler::class)->handle(
-            $this->createdEvent(['metadata' => ['timezone' => 'Mars/Olympus_Mons']])
-        );
-
-        $this->assertSame(
-            config('operations.default_timezone'),
-            Store::find(42)->timezone
-        );
+        $this->assertNotNull($store);
+        $this->assertSame(['id', 'store_number', 'name', 'created_at', 'updated_at', 'deleted_at'],
+            array_keys($store->getAttributes()));
     }
 
     public function test_a_redelivered_created_event_is_idempotent(): void
@@ -97,14 +91,11 @@ class StoreReplicationTest extends TestCase
             ],
         ]);
 
-        $store = Store::find(42);
-        $this->assertSame('Downtown East', $store->name);
-        $this->assertFalse($store->is_active);
-        // Not in the delta → untouched.
-        $this->assertSame('America/New_York', $store->timezone);
+        // Only `name` is applied; is_active in the delta is ignored.
+        $this->assertSame('Downtown East', Store::find(42)->name);
     }
 
-    public function test_an_update_without_a_timezone_in_metadata_does_not_reset_it(): void
+    public function test_an_update_carrying_only_ignored_fields_is_a_no_op(): void
     {
         app(StoreCreatedHandler::class)->handle($this->createdEvent());
 
@@ -112,14 +103,14 @@ class StoreReplicationTest extends TestCase
             'data' => [
                 'store_id' => 42,
                 'changed_fields' => [
-                    'metadata' => ['from' => null, 'to' => ['region' => 'east']],
+                    'metadata' => ['from' => null, 'to' => ['timezone' => 'America/New_York']],
+                    'is_active' => ['from' => true, 'to' => false],
                 ],
             ],
         ]);
 
-        // The whole point: a metadata change that says nothing about timezone
-        // must never overwrite a good value with the app default.
-        $this->assertSame('America/New_York', Store::find(42)->timezone);
+        // Nothing we store changed, and nothing threw.
+        $this->assertSame('Downtown', Store::find(42)->name);
     }
 
     public function test_an_update_before_its_create_throws_so_the_consumer_retries(): void

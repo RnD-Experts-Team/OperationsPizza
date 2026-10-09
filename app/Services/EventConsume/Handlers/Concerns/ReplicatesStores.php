@@ -2,7 +2,6 @@
 
 namespace App\Services\EventConsume\Handlers\Concerns;
 
-use Illuminate\Support\Facades\Log;
 
 /**
  * Shared parsing for pizzasys store events.
@@ -59,81 +58,13 @@ trait ReplicatesStores
     }
 
     /**
-     * Store events do NOT carry a timezone — pizzasys' stores table has no such
-     * column (verified in StoreManagementService::createStore). It only has a
-     * free-form `metadata` JSON blob, so that is the one place an operator can
-     * put one.
-     *
-     * Every shift time in this service is stored as a UTC instant derived from
-     * the store's local wall-clock time. A wrong timezone here is therefore
-     * silent, week-long corruption that nobody notices until payroll — so the
-     * fallback is logged at warning level, deliberately noisily.
+     * NOTE: pizzasys store events carry no timezone at all — its stores table
+     * has no such column (verified in StoreManagementService::createStore),
+     * only a free-form `metadata` blob. We no longer try to read one: the
+     * timezone that decides what a shift means is the one on the mapped
+     * Humanity location, because Humanity interprets every date and "HH:MM" we
+     * send in its own location local time. See StoreTimezoneResolver.
      */
-    protected function resolveTimezone(mixed $metadata, string $storeNumber): string
-    {
-        $fromMetadata = $this->timezoneFromMetadata($metadata, $storeNumber);
-        if ($fromMetadata !== null) {
-            return $fromMetadata;
-        }
-
-        $configured = config("operations.store_timezones.{$storeNumber}");
-        if (is_string($configured) && $this->isValidTimezone($configured)) {
-            return $configured;
-        }
-
-        $default = (string) config('operations.default_timezone', 'America/Chicago');
-
-        Log::warning('Store has no timezone in event metadata or config — falling back', [
-            'store_number' => $storeNumber,
-            'fallback' => $default,
-            'impact' => 'every shift time for this store will be converted using the fallback timezone',
-        ]);
-
-        return $default;
-    }
-
-    /**
-     * The timezone an operator actually put in pizzasys' store metadata, or
-     * null if there isn't one. Distinct from resolveTimezone(), which always
-     * returns something — callers applying a partial update need to know the
-     * difference between "metadata says UTC" and "metadata said nothing", so
-     * they don't overwrite a good stored value with the app default.
-     */
-    protected function timezoneFromMetadata(mixed $metadata, string $storeNumber): ?string
-    {
-        if (is_string($metadata)) {
-            $decoded = json_decode($metadata, true);
-            $metadata = is_array($decoded) ? $decoded : null;
-        }
-
-        if (!is_array($metadata)) {
-            return null;
-        }
-
-        foreach (['timezone', 'time_zone', 'tz'] as $key) {
-            $tz = $this->stringOrNull(data_get($metadata, $key));
-
-            if ($tz === null) {
-                continue;
-            }
-
-            if ($this->isValidTimezone($tz)) {
-                return $tz;
-            }
-
-            Log::warning('Store metadata carries an invalid timezone; ignoring', [
-                'store_number' => $storeNumber,
-                'value' => $tz,
-            ]);
-        }
-
-        return null;
-    }
-
-    private function isValidTimezone(string $tz): bool
-    {
-        return in_array($tz, timezone_identifiers_list(), true);
-    }
 
     protected function stringOrNull(mixed $value): ?string
     {

@@ -23,6 +23,9 @@
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="BROADCAST_CONNECTION" value="null"/>
         <env name="CACHE_STORE" value="array"/>
+        <!-- No real Humanity on the other end, so pacing would only add
+             wall-clock sleep to every test that writes a shift. -->
+        <env name="HUMANITY_REQUESTS_PER_SECOND" value="0"/>
         <env name="DB_CONNECTION" value="sqlite"/>
         <env name="DB_DATABASE" value=":memory:"/>
         <env name="DB_URL" value=""/>

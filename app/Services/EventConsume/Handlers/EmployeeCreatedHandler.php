@@ -42,15 +42,11 @@ class EmployeeCreatedHandler implements EventHandlerInterface
 
             $attributes = [
                 'first_name' => $firstName,
-                'middle_name' => $this->stringOrNull(data_get($payload, 'middle_name')),
                 'last_name' => $lastName,
-                'gender' => $this->stringOrNull(data_get($payload, 'gender')),
-                'employment_type' => $this->stringOrNull(data_get($payload, 'employment_type')),
-                'birth_date' => $this->stringOrNull(data_get($payload, 'obsession.birth_date')),
-                'image_url' => $this->stringOrNull(data_get($payload, 'obsession.image_url')),
                 'active' => $this->anyActive($memberships),
                 'current_status' => $this->latestStatus($statusHistories),
-                'current_status_effective_date' => $this->latestStatusEffectiveDate($statusHistories),
+                'hourly_rate' => $this->currentHourlyRate((array) data_get($payload, 'pay_histories', [])),
+                'position_label' => $this->currentPositionLabel((array) data_get($payload, 'positions', [])),
                 'hiring_event_at' => $this->eventTime($event),
             ];
 
@@ -66,11 +62,7 @@ class EmployeeCreatedHandler implements EventHandlerInterface
                 $employee->save();
             }
 
-            $this->replaceContacts($id, (array) data_get($payload, 'contacts', []));
-            $this->replaceStatusHistories($id, $statusHistories);
-            $this->replacePayHistories($id, (array) data_get($payload, 'pay_histories', []));
             $this->replaceAvailability($id, (array) data_get($payload, 'availability_days', []));
-            $this->replacePositions($id, (array) data_get($payload, 'positions', []));
             $this->replaceMemberships($id, $memberships);
 
             // Last: it may set humanity_employee_id, and it saves the model.

@@ -74,6 +74,35 @@ class ScheduleBulkController extends Controller
         return response()->json(['data' => $this->bulk->present($operation)], 202);
     }
 
+    public function createShifts(Request $request, string $storeId): JsonResponse
+    {
+        $store = $this->resolveStore($storeId);
+
+        $validated = $request->validate([
+            'week_start' => ['required', 'date_format:Y-m-d'],
+            'mode' => ['nullable', 'in:replace,merge'],
+            'shifts' => ['required', 'array', 'min:1', 'max:500'],
+            'shifts.*.employee_id' => ['required', 'integer', 'min:1'],
+            'shifts.*.day_index' => ['required', 'integer', 'min:0', 'max:6'],
+            'shifts.*.start_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/'],
+            'shifts.*.end_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/'],
+            'shifts.*.label' => ['nullable', 'string', 'max:120'],
+            'shifts.*.shift_type' => ['nullable', 'in:morning,evening,night,split,custom'],
+            'shifts.*.note' => ['nullable', 'string', 'max:2000'],
+            'shifts.*.position_label' => ['nullable', 'string', 'max:190'],
+        ]);
+
+        $operation = $this->bulk->createShifts(
+            $store,
+            $validated['week_start'],
+            $validated['shifts'],
+            $validated['mode'] ?? 'merge',
+            $request->user()?->id
+        );
+
+        return response()->json(['data' => $this->bulk->present($operation)], 202);
+    }
+
     public function clearWeek(Request $request, string $storeId): JsonResponse
     {
         $store = $this->resolveStore($storeId);
@@ -104,12 +133,19 @@ class ScheduleBulkController extends Controller
 
         $failedCount = $operation->items()->where('status', 'failed')->count();
 
-        if ($failedCount === 0) {
+        // Items left `pending` on a failed operation are unfinished work too —
+        // that is exactly what a throttle-killed run leaves behind. Counting
+        // only `failed` here is what used to make Retry a silent no-op on the
+        // one case that most needed it.
+        $unfinishedCount = $operation->items()->whereIn('status', ['pending', 'processing'])->count();
+
+        if ($failedCount === 0 && $unfinishedCount === 0) {
             return response()->json(['data' => $this->bulk->present($operation)]);
         }
 
-        // Reset only the failures, and roll the counter back by the same amount
-        // so progress stays truthful on the second pass.
+        // Reset the failures, and roll the counter back by the same amount so
+        // progress stays truthful on the second pass. Pending items are
+        // already in the right state and just need a job to pick them up.
         $operation->items()->where('status', 'failed')->update(['status' => 'pending']);
 
         $operation->update([

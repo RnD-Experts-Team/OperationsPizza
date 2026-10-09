@@ -80,6 +80,33 @@ class BulkOperationService
         ]);
     }
 
+    /**
+     * A raw, freeform list of shifts for one week — the one-hit alternative to
+     * looping `POST /shifts` per shift from the frontend. Each item is
+     * day-index relative (0=Tue..6=Mon, matching the grid), not tied to any
+     * existing week or template, unlike copyWeek/applyTemplate above.
+     *
+     * @param  array<int, array{employee_id:int, day_index:int, start_time:string, end_time:string,
+     *                           label?:string, shift_type?:string, note?:string, position_label?:string}>  $shifts
+     */
+    public function createShifts(Store $store, string $weekStart, array $shifts, string $mode, ?int $userId): ScheduleBulkOperation
+    {
+        $target = $this->weeks->normalizeWeekStart($weekStart, $this->weeks->weekStartDow($store->settings()));
+
+        $payloads = array_map(fn (array $shift) => array_filter([
+            'employee_id' => (int) $shift['employee_id'],
+            'shift_date' => $target->addDays((int) $shift['day_index'])->toDateString(),
+            'start_time' => $shift['start_time'],
+            'end_time' => $shift['end_time'],
+            'label' => $shift['label'] ?? null,
+            'shift_type' => $shift['shift_type'] ?? null,
+            'note' => $shift['note'] ?? null,
+            'position_label' => $shift['position_label'] ?? null,
+        ], fn ($value) => $value !== null), $shifts);
+
+        return $this->queue($store, 'bulk_create', $target->toDateString(), $payloads, $mode, $userId);
+    }
+
     public function clearWeek(Store $store, string $week, ?int $userId): ScheduleBulkOperation
     {
         $settings = $store->settings();
@@ -91,9 +118,12 @@ class BulkOperationService
     /**
      * Build the item list and hand it to the queue.
      *
-     * In `replace` mode the deletes are sequenced FIRST and as their own items,
-     * so a failure part-way through is visible rather than silently producing a
-     * doubled week.
+     * Items are grouped BY DAY, and within a day the deletes come before the
+     * creates. The obvious alternative — every delete first, then every create
+     * — is what this deliberately avoids: a throttle between the two phases
+     * would leave the target week deleted in Humanity and not yet rebuilt,
+     * i.e. an empty published schedule. Pairing them per day bounds that
+     * damage to the single day being rewritten when the throttle lands.
      */
     private function queue(
         Store $store,
@@ -117,7 +147,10 @@ class BulkOperationService
 
             foreach ($existing as $assignment) {
                 if ($assignment->shift !== null) {
-                    $deletes[] = ['shift_id' => (int) $assignment->shift_id];
+                    $deletes[] = [
+                        'shift_id' => (int) $assignment->shift_id,
+                        'shift_date' => (string) $assignment->shift->shift_date->toDateString(),
+                    ];
                 }
             }
 
@@ -139,28 +172,65 @@ class BulkOperationService
 
             $sequence = 0;
 
-            foreach ($deletes as $delete) {
-                $operation->items()->create([
-                    'sequence' => $sequence++,
-                    'action' => 'delete',
-                    'shift_id' => $delete['shift_id'],
-                    'payload' => $delete,
-                ]);
-            }
-
-            foreach ($createPayloads as $payload) {
-                $operation->items()->create([
-                    'sequence' => $sequence++,
-                    'action' => 'create',
-                    'employee_id' => $payload['employee_id'],
-                    'payload' => $payload,
-                ]);
+            foreach ($this->itemsByDay($deletes, $createPayloads) as $item) {
+                $operation->items()->create($item + ['sequence' => $sequence++]);
             }
 
             ProcessBulkOperationJob::dispatch($operation->id);
 
             return $operation;
         });
+    }
+
+    /**
+     * Interleave deletes and creates into one day-ordered item list.
+     *
+     * Within a day the delete must precede the create, or a `replace` would
+     * remove the shift it just wrote. Across days the order is chronological,
+     * so a run cut short by a throttle has completed the EARLIEST days —
+     * Monday exists everywhere before anyone gets Sunday.
+     *
+     * An item with no date (a delete whose shift row has since gone) sorts
+     * last: it cannot be attributed to a day, and it is never the part of the
+     * week a manager needs first.
+     *
+     * @param  array<int, array{shift_id:int, shift_date?:string}>  $deletes
+     * @param  array<int, array<string, mixed>>  $createPayloads
+     * @return array<int, array<string, mixed>>
+     */
+    private function itemsByDay(array $deletes, array $createPayloads): array
+    {
+        $byDay = [];
+
+        foreach ($deletes as $delete) {
+            $byDay[$delete['shift_date'] ?? '9999-12-31']['delete'][] = [
+                'action' => 'delete',
+                'shift_date' => $delete['shift_date'] ?? null,
+                'shift_id' => $delete['shift_id'],
+                'payload' => $delete,
+            ];
+        }
+
+        foreach ($createPayloads as $payload) {
+            $byDay[$payload['shift_date'] ?? '9999-12-31']['create'][] = [
+                'action' => 'create',
+                'shift_date' => $payload['shift_date'] ?? null,
+                'employee_id' => $payload['employee_id'],
+                'payload' => $payload,
+            ];
+        }
+
+        ksort($byDay);
+
+        $items = [];
+
+        foreach ($byDay as $day) {
+            foreach (array_merge($day['delete'] ?? [], $day['create'] ?? []) as $item) {
+                $items[] = $item;
+            }
+        }
+
+        return $items;
     }
 
     public function present(ScheduleBulkOperation $operation, bool $withItems = true): array

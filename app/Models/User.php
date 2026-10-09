@@ -12,21 +12,18 @@ use Illuminate\Foundation\Auth\User as Authenticatable;
  * Auth::login() after pizzasys has already verified the token; there is no
  * password here and nothing local ever checks credentials.
  */
-#[Fillable(['id', 'name', 'email', 'email_verified_at', 'is_active'])]
+#[Fillable(['id', 'name', 'email'])]
 class User extends Authenticatable
 {
     use ReplicatedModel;
 
     /**
-     * Get the attributes that should be cast.
-     *
-     * @return array<string, string>
+     * Nothing to cast: this table holds id, name and email only. Verification
+     * state, roles and active status all live in pizzasys, which is consulted
+     * on every request rather than mirrored here.
      */
     protected function casts(): array
     {
-        return [
-            'email_verified_at' => 'datetime',
-            'is_active' => 'boolean',
-        ];
+        return [];
     }
 }

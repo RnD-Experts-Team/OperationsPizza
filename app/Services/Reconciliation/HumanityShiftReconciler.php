@@ -13,6 +13,7 @@ use App\Services\Humanity\HumanitySyncLogger;
 use App\Services\OperationsEvents\OperationsEventFactory;
 use App\Services\OperationsEvents\OperationsOutboxService;
 use App\Services\Scheduling\ShiftFingerprint;
+use App\Services\Scheduling\StoreTimezoneResolver;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -37,6 +38,7 @@ class HumanityShiftReconciler
         private readonly HumanityPositionResolver $positions,
         private readonly HumanitySyncLogger $syncLog,
         private readonly ShiftFingerprint $fingerprint,
+        private readonly StoreTimezoneResolver $timezones,
         private readonly OperationsEventFactory $events,
         private readonly OperationsOutboxService $outbox,
     ) {
@@ -65,7 +67,7 @@ class HumanityShiftReconciler
 
     private function run(Store $store, CarbonImmutable $from, CarbonImmutable $to, bool $dryRun, ReconciliationReport $report): ReconciliationReport
     {
-        $timezone = (string) ($store->timezone ?: config('operations.default_timezone'));
+        $timezone = $this->timezones->for($store);
         $locationId = $this->positions->locationId($store);
 
         $snapshotAt = CarbonImmutable::now();
@@ -129,6 +131,15 @@ class HumanityShiftReconciler
         }
 
         $report->imported++;
+
+        $report->changes[] = [
+            'action' => 'imported',
+            'humanity_shift_id' => $remote->shiftId,
+            'date' => $remote->startDate,
+            'start' => $remote->startTime,
+            'end' => $remote->endTime,
+            'employees' => $remote->employeeIds,
+        ];
 
         if ($dryRun) {
             return;
@@ -198,6 +209,14 @@ class HumanityShiftReconciler
 
         $report->updated++;
 
+        $report->changes[] = [
+            'action' => 'updated',
+            'shift_id' => (int) $localShift->id,
+            'humanity_shift_id' => $remote->shiftId,
+            'date' => (string) $localShift->shift_date,
+            'diff' => $diff,
+        ];
+
         if ($dryRun) {
             return;
         }
@@ -247,7 +266,26 @@ class HumanityShiftReconciler
             return;
         }
 
+        // Owed to Humanity, not missing from it. A throttled write saves the
+        // shift locally and retries for up to a day, so "absent upstream" is
+        // the expected state for that whole window — far longer than the
+        // grace period above. Deleting here would silently destroy a
+        // manager's schedule precisely when the account was too busy to
+        // accept it.
+        if ($localShift->isAwaitingHumanitySync()) {
+            $report->skipped++;
+
+            return;
+        }
+
         $report->deleted++;
+
+        $report->changes[] = [
+            'action' => 'deleted',
+            'shift_id' => (int) $localShift->id,
+            'humanity_shift_id' => $localShift->humanity_shift_id,
+            'date' => (string) $localShift->shift_date,
+        ];
 
         if ($dryRun) {
             return;

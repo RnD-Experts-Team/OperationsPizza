@@ -18,15 +18,6 @@ return new class extends Migration {
 
             $table->string('name', 190)->nullable();
 
-            // Store events do NOT carry a timezone (verified in pizzasys
-            // StoreManagementService::createStore). StoreCreatedHandler reads
-            // data.store.metadata.timezone, then config, and logs loudly on
-            // fallback — a wrong timezone here is silent, week-long corruption
-            // of every shift time.
-            $table->string('timezone', 64)->default('America/Chicago');
-
-            $table->boolean('is_active')->default(true)->index();
-
             $table->timestamps();
             $table->softDeletes();
         });

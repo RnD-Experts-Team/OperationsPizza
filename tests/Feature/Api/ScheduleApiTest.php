@@ -49,7 +49,7 @@ class ScheduleApiTest extends TestCase
 
         HumanityLocation::query()->create(['store_id' => 1, 'humanity_location_id' => 'LOC1', 'name' => 'Downtown']);
         HumanityPosition::query()->create(['humanity_position_id' => 'POS1', 'humanity_location_id' => 'LOC1', 'name' => 'Kitchen']);
-        HumanityPositionMap::query()->create(['store_id' => 1, 'position_id' => null, 'humanity_position_id' => 'POS1', 'is_default' => true]);
+        HumanityPositionMap::query()->create(['store_id' => 1, 'position_label' => null, 'humanity_position_id' => 'POS1', 'is_default' => true]);
 
         Employee::query()->create([
             'id' => 501,
@@ -171,6 +171,47 @@ class ScheduleApiTest extends TestCase
         $this->assertNotNull($response->json('data.humanity_shift_id'));
     }
 
+    public function test_position_label_override_is_applied_on_create(): void
+    {
+        // Regression: ShiftStoreRequest used to validate the dead `position_id`
+        // (int) field instead of `position_label` (string), so an explicit
+        // override was silently dropped before it ever reached the writer.
+        HumanityPosition::query()->create(['humanity_position_id' => 'POS2', 'humanity_location_id' => 'LOC1', 'name' => 'Cashier']);
+        HumanityPositionMap::query()->create(['store_id' => 1, 'position_label' => 'Cashier', 'humanity_position_id' => 'POS2', 'is_default' => false]);
+
+        $response = $this->postJson('/api/v1/stores/03759-00001/shifts', [
+            'employee_id' => 501,
+            'shift_date' => '2026-08-06',
+            'start_time' => '09:00',
+            'end_time' => '17:00',
+            'position_label' => 'Cashier',
+        ], $this->headers());
+
+        $response->assertCreated();
+
+        $shift = Shift::query()->find($response->json('data.shift_id'));
+        $this->assertSame('POS2', $shift->humanity_position_id);
+    }
+
+    public function test_bulk_create_shifts_queues_and_writes_through(): void
+    {
+        $response = $this->postJson('/api/v1/stores/03759-00001/schedule/bulk/create-shifts', [
+            'week_start' => '2026-08-04',
+            'shifts' => [
+                ['employee_id' => 501, 'day_index' => 0, 'start_time' => '09:00', 'end_time' => '17:00', 'label' => 'Morning'],
+            ],
+        ], $this->headers());
+
+        $response->assertStatus(202);
+        $this->assertSame('queued', $response->json('data.status'));
+        $this->assertSame(1, $response->json('data.total'));
+
+        app(\App\Jobs\ProcessBulkOperationJob::class, ['operationId' => $response->json('data.id')])
+            ->handle(app(\App\Services\Scheduling\ShiftWriteService::class));
+
+        $this->assertSame(1, Shift::query()->whereBetween('shift_date', ['2026-08-04', '2026-08-10'])->count());
+    }
+
     public function test_a_conflicting_shift_returns_409_with_an_actionable_code(): void
     {
         $payload = [
@@ -236,6 +277,31 @@ class ScheduleApiTest extends TestCase
         $this->assertSame(0, Shift::count());
     }
 
+    public function test_a_tcp_linked_employee_waits_on_tcps_connector_without_re_requesting_a_tcp_push(): void
+    {
+        // Already in TCP, just not propagated to Humanity yet (no eid seeded
+        // on the fake client) — this must NOT re-fire tcp_sync_requested,
+        // since that would ask HiringPizza to push someone who's already there.
+        Employee::query()->whereKey(501)->update([
+            'humanity_employee_id' => null,
+            'tcp_employee_id' => '9004321',
+        ]);
+
+        $response = $this->postJson('/api/v1/stores/03759-00001/shifts', [
+            'employee_id' => 501,
+            'shift_date' => '2026-08-06',
+            'start_time' => '09:00',
+            'end_time' => '17:00',
+        ], $this->headers());
+
+        $response->assertStatus(409)
+            ->assertJsonPath('error.code', 'EMPLOYEE_NOT_SYNCED')
+            ->assertJsonPath('error.sync_status', 'awaiting_tcp_connector');
+
+        $this->assertSame(0, \App\Models\EmployeeSyncRequest::query()->count());
+        $this->assertSame(0, \App\Models\OperationsOutboxEvent::query()->count());
+    }
+
     public function test_deleting_a_published_shift_requires_confirmation(): void
     {
         $created = $this->postJson('/api/v1/stores/03759-00001/shifts', [
@@ -281,5 +347,63 @@ class ScheduleApiTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.synced', true)
             ->assertJsonPath('data.humanity_employee_id', '88213');
+    }
+
+    public function test_sync_endpoints_refuse_an_employee_from_another_store(): void
+    {
+        Store::query()->create(['id' => 2, 'store_number' => '03759-00002', 'name' => 'Uptown', 'timezone' => 'America/Chicago']);
+
+        // 501 works at 03759-00001 only; a manager of 03759-00002 must not reach them.
+        $this->getJson('/api/v1/stores/03759-00002/employees/501/sync-status', $this->headers())
+            ->assertNotFound();
+        $this->postJson('/api/v1/stores/03759-00002/employees/501/humanity-sync', [], $this->headers())
+            ->assertNotFound();
+
+        $this->assertSame(0, \App\Models\EmployeeSyncRequest::query()->count());
+    }
+
+    public function test_an_availability_override_can_be_deleted_by_its_raw_id(): void
+    {
+        $override = \App\Models\ScheduleAvailabilityOverride::query()->create([
+            'store_id' => 1,
+            'employee_id' => 501,
+            'scope' => 'weekly',
+            'day_of_week' => 2,
+            'all_day' => true,
+        ]);
+
+        $this->deleteJson("/api/v1/stores/03759-00001/availability-overrides/{$override->id}", [], $this->headers())
+            ->assertNoContent();
+
+        $this->assertSoftDeleted($override);
+    }
+
+    public function test_an_availability_override_can_be_deleted_by_the_week_grids_composite_id(): void
+    {
+        // The week grid's availability projection labels each override
+        // "override-{id}-{dayIndex}" and echoes that id back verbatim when
+        // the manager removes it — the route must resolve it too, not just
+        // the bare database id.
+        $override = \App\Models\ScheduleAvailabilityOverride::query()->create([
+            'store_id' => 1,
+            'employee_id' => 501,
+            'scope' => 'weekly',
+            'day_of_week' => 2,
+            'all_day' => true,
+        ]);
+
+        $this->deleteJson(
+            "/api/v1/stores/03759-00001/availability-overrides/override-{$override->id}-3",
+            [],
+            $this->headers()
+        )->assertNoContent();
+
+        $this->assertSoftDeleted($override);
+    }
+
+    public function test_an_unresolvable_override_id_is_a_clean_404(): void
+    {
+        $this->deleteJson('/api/v1/stores/03759-00001/availability-overrides/not-an-id', [], $this->headers())
+            ->assertNotFound();
     }
 }

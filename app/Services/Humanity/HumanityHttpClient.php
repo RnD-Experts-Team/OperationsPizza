@@ -12,17 +12,17 @@ use Illuminate\Support\Facades\Log;
 
 class HumanityHttpClient implements HumanityClientInterface
 {
+    // There is no HUMANITY_ENV guard here anymore, deliberately: Humanity has
+    // no sandbox, so an "environment" label could only ever describe the ONE
+    // live account — and the old label actively inverted safety (sandbox
+    // enabled the cron reconciler and skipped the confirm prompt). What
+    // protects production now: driver=fake by default, writes_enabled=false
+    // by default, and the EXTERNAL_WRITE_ALLOWED_STORES rollout allowlist.
     public function __construct(
         private readonly HumanityTokenManager $tokens,
         private readonly HumanityDateFormatter $dates,
+        private readonly HumanityRateLimiter $limiter,
     ) {
-        // No default for humanity.environment on purpose: pointing a dev box at
-        // the live account by forgetting a variable is not a recoverable mistake.
-        if (blank(config('humanity.environment'))) {
-            throw new HumanityException(
-                'HUMANITY_ENV is not set. Refusing to talk to Humanity without an explicit environment.'
-            );
-        }
     }
 
     // ---------------------------------------------------------------- catalog
@@ -80,7 +80,14 @@ class HumanityHttpClient implements HumanityClientInterface
             return $id === null ? null : [
                 'id' => $id,
                 'name' => (string) ($row['name'] ?? $row['title'] ?? "Position {$id}"),
-                'location_id' => $this->nullableString($row['location'] ?? $row['location_id'] ?? null),
+                // location may arrive as a flat id or as a nested {id, name}
+                // object, depending on the account — handle both rather than
+                // assuming and silently losing it via nullableString(array).
+                'location_id' => $this->nullableString(
+                    is_array($row['location'] ?? null)
+                        ? ($row['location']['id'] ?? null)
+                        : ($row['location'] ?? $row['location_id'] ?? null)
+                ),
                 'is_active' => !$this->truthy($row['deleted'] ?? false),
                 'updated_at' => $this->nullableString($row['updated_at'] ?? null),
                 'color' => $this->nullableString($row['color'] ?? null),
@@ -93,10 +100,12 @@ class HumanityHttpClient implements HumanityClientInterface
 
     public function listEmployees(bool $includeInactive = false): array
     {
-        $query = $includeInactive ? ['disabled' => 1, 'inactive' => 1] : [];
-
+        // Confirmed live 2026-08-26: an unfiltered call already returns the
+        // full roster (active + inactive + disabled). Passing disabled=1&
+        // inactive=1 does NOT widen that — it narrows the result to ONLY
+        // disabled/inactive employees, silently dropping every active one.
         return array_values(array_filter(
-            $this->get('employees', $query, 'list employees'),
+            $this->get('employees', [], 'list employees'),
             'is_array'
         ));
     }
@@ -147,7 +156,7 @@ class HumanityHttpClient implements HumanityClientInterface
 
     public function getShift(string $humanityShiftId): ?HumanityShiftResult
     {
-        $data = $this->get("shifts/{$humanityShiftId}", [], 'get shift', allowMissing: true);
+        $data = $this->get("shifts/{$humanityShiftId}", [], 'get shift', allowMissing: true, singleObject: true);
 
         if ($data === []) {
             return null;
@@ -169,12 +178,19 @@ class HumanityHttpClient implements HumanityClientInterface
             'start_time' => $this->dates->time($payload->startsLocal),
             'end_time' => $this->dates->time($payload->endsLocal),
             'type' => $payload->open ? 1 : 0,
-            'needed' => $payload->slots,
+            // `needed` counts slots still to FILL, not headcount — a Standard
+            // (non-open) shift must carry 0 or Humanity rejects the type/needed
+            // combination as contradictory.
+            'needed' => $payload->open ? $payload->slots : 0,
+            // `location` is deliberately NOT sent: it's a remote-location
+            // override, not the shift's real location — that comes from
+            // `schedule` (the position) on Humanity's side. Sending our
+            // locally-cached store location here is what produced
+            // "Location with id 'X' does not exist" regardless of which id
+            // was tried; $payload->locationId is still resolved and kept
+            // locally (humanity_locations, Shift.humanity_location_id) for
+            // reconciliation and listShifts()'s read filter.
         ];
-
-        if ($payload->locationId !== '') {
-            $body['location'] = $payload->locationId;
-        }
 
         if ($payload->title !== null) {
             $body['title'] = $payload->title;
@@ -192,7 +208,7 @@ class HumanityHttpClient implements HumanityClientInterface
 
         // NOTE: POST is never auto-retried (see request()). A timed-out create
         // is resolved by the caller's read-back probe, not by retrying blind.
-        $data = $this->post('shifts', $body, 'create shift');
+        $data = $this->post('shifts', $body, 'create shift', singleObject: true);
 
         return $this->requireShiftResult($data, 'create shift');
     }
@@ -208,24 +224,32 @@ class HumanityHttpClient implements HumanityClientInterface
             'start_time' => $this->dates->time($payload->startsLocal),
             'end_time' => $this->dates->time($payload->endsLocal),
             'type' => $payload->open ? 1 : 0,
-            'needed' => $payload->slots,
-            'title' => $payload->title,
-            'notes' => $payload->note,
+            // See createShift(): 0 unless this is an open shift, or Humanity
+            // rejects the type/needed combination as contradictory.
+            'needed' => $payload->open ? $payload->slots : 0,
+            // See createShift(): `location` is a remote-location override,
+            // not the shift's real location, and must not be sent here either.
 
-            // Without these flags Humanity accepts the request, returns
-            // status 1, and changes NOTHING. Silently. Always send the ones
-            // matching the fields present in the body.
-            'update_time' => 1,
-            'update_type' => 1,
-            'update_notes' => 1,
-            'update_schedule' => 1,
+            // NOTE: no update_time/update_type/update_notes/update_schedule
+            // flags — an unverified assumption (like `location` and the old
+            // `needed`) that a separate confirmed-against-official-docs
+            // implementation of this same API never uses. If updates start
+            // silently no-op'ing again without them, that theory needs
+            // revisiting, but they aren't sent for now.
         ];
 
-        if ($payload->locationId !== '') {
-            $body['location'] = $payload->locationId;
+        // Conditional, matching createShift(): sending `title`/`notes` as
+        // null (rather than omitting them) is not the same as "leave this
+        // field alone" to Humanity.
+        if ($payload->title !== null) {
+            $body['title'] = $payload->title;
         }
 
-        $data = $this->put("shifts/{$humanityShiftId}", $body, 'update shift');
+        if ($payload->note !== null) {
+            $body['notes'] = $payload->note;
+        }
+
+        $data = $this->put("shifts/{$humanityShiftId}", $body, 'update shift', singleObject: true);
 
         return $this->requireShiftResult($data, 'update shift', $humanityShiftId);
     }
@@ -247,7 +271,7 @@ class HumanityHttpClient implements HumanityClientInterface
             'add' => implode(',', $humanityEmployeeIds),
             'force' => $force ? 1 : 0,
             'update_staff' => 1,
-        ], 'assign employees');
+        ], 'assign employees', singleObject: true);
 
         return $this->requireShiftResult($data, 'assign employees', $humanityShiftId);
     }
@@ -259,7 +283,7 @@ class HumanityHttpClient implements HumanityClientInterface
         $data = $this->put("shifts/{$humanityShiftId}", [
             'remove' => implode(',', $humanityEmployeeIds),
             'update_staff' => 1,
-        ], 'unassign employees');
+        ], 'unassign employees', singleObject: true);
 
         return $this->requireShiftResult($data, 'unassign employees', $humanityShiftId);
     }
@@ -311,23 +335,29 @@ class HumanityHttpClient implements HumanityClientInterface
 
     // ------------------------------------------------------------- HTTP plumbing
 
-    private function get(string $path, array $query, string $context, bool $allowMissing = false): array
+    private function get(string $path, array $query, string $context, bool $allowMissing = false, bool $singleObject = false): array
     {
-        return $this->request('get', $path, $query, $context, $allowMissing);
+        return $this->request('get', $path, $query, $context, $allowMissing, $singleObject);
     }
 
-    private function post(string $path, array $body, string $context): array
+    private function post(string $path, array $body, string $context, bool $singleObject = false): array
     {
-        return $this->request('post', $path, $body, $context);
+        return $this->request('post', $path, $body, $context, singleObject: $singleObject);
     }
 
-    private function put(string $path, array $body, string $context): array
+    private function put(string $path, array $body, string $context, bool $singleObject = false): array
     {
-        return $this->request('put', $path, $body, $context);
+        return $this->request('put', $path, $body, $context, singleObject: $singleObject);
     }
 
-    private function request(string $method, string $path, array $payload, string $context, bool $allowMissing = false): array
-    {
+    private function request(
+        string $method,
+        string $path,
+        array $payload,
+        string $context,
+        bool $allowMissing = false,
+        bool $singleObject = false,
+    ): array {
         $response = $this->send($method, $path, $payload);
 
         // The token may have been revoked mid-flight; re-auth once.
@@ -344,12 +374,34 @@ class HumanityHttpClient implements HumanityClientInterface
 
         $data = $response->data();
 
-        return $this->unwrapCollection($data);
+        // A single shift object carries its OWN `employees` key (its
+        // roster) — unwrapCollection()'s wrapper-key sniffing (meant for
+        // list envelopes like {"shifts":[...]}) matches that key and
+        // silently returns the roster instead of the shift, so toShiftResult()
+        // ends up reading an EMPLOYEE's id as the shift's id. get/create/
+        // update/assign/unassign shift all return one object, never a
+        // named-wrapper list, so they must skip that sniffing entirely.
+        return $singleObject ? $this->singleRow($data) : $this->unwrapCollection($data);
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    private function singleRow(array $data): array
+    {
+        if ($data !== [] && !array_is_list($data)) {
+            return [$data];
+        }
+
+        return $data;
     }
 
     private function send(string $method, string $path, array $payload): HumanityResponse
     {
         $url = rtrim((string) config('humanity.base_url'), '/') . '/' . ltrim($path, '/');
+
+        // Every call passes one shared gate. Previously only the bulk job
+        // paced itself, and it did so with a per-process sleep — so a second
+        // worker doubled the real rate against an account-wide limit.
+        $this->limiter->hit();
 
         $request = $this->pendingRequest($method);
 
@@ -359,7 +411,24 @@ class HumanityHttpClient implements HumanityClientInterface
 
         $parsed = HumanityResponse::fromHttp($response);
 
-        if (!$parsed->isSuccess()) {
+        if ($parsed->humanityStatus === HumanityResponse::THROTTLED) {
+            $this->limiter->recordThrottle();
+
+            // The only chance this service gets to learn where Humanity's real
+            // ceiling sits. Humanity documents no limit, no window and no
+            // headers, and a 91 arrives as HTTP 200 with a body code rather
+            // than a 429 — so the trailing call counts, plus whatever headers
+            // and body it did send, are the entire evidence base. Logged in
+            // full and deliberately: this is rare, and cheap when it happens.
+            Log::error('Humanity throttled us (status 91)', [
+                'method' => strtoupper($method),
+                'path' => $path,
+                'calls_in_trailing_minute' => $this->limiter->recentUsage()['minute'],
+                'calls_in_trailing_hour' => $this->limiter->recentUsage()['hour'],
+                'response_headers' => $response->headers(),
+                'response_body' => $response->body(),
+            ]);
+        } elseif (!$parsed->isSuccess()) {
             Log::warning('Humanity call failed', [
                 'method' => strtoupper($method),
                 'path' => $path,

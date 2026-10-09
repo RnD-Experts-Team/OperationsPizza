@@ -23,7 +23,7 @@ return new class extends Migration {
             $table->unsignedBigInteger('store_id');
             $table->foreign('store_id')->references('id')->on('stores')->cascadeOnDelete();
 
-            $table->string('type', 30); // copy_week|apply_template|publish_week|unpublish_week|clear_week|restore_published|recurring_expand|retry_failed
+            $table->string('type', 30); // bulk_create|copy_week|apply_template|publish_week|unpublish_week|clear_week|restore_published|recurring_expand|retry_failed
             $table->string('status', 30)->default('queued')->index(); // queued|processing|completed|completed_with_errors|failed
 
             $table->date('week_start_date')->nullable();

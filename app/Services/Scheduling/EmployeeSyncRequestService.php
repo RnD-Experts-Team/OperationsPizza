@@ -11,10 +11,10 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 /**
- * HiringPizza is the ONLY writer of employees into Humanity, so when scheduling
- * meets an unlinked employee we ask over NATS and wait rather than creating the
- * staff record ourselves — two writers to one external system is how duplicate
- * people happen.
+ * HiringPizza is the ONLY writer of employees into TCP Manager+ (whose own
+ * connector carries them into Humanity), so when scheduling meets an unlinked
+ * employee we ask over NATS and wait rather than creating the staff record
+ * ourselves — two writers to one external system is how duplicate people happen.
  */
 class EmployeeSyncRequestService
 {
@@ -60,7 +60,7 @@ class EmployeeSyncRequestService
                 ]
             );
 
-            $envelope = $this->events->make('operations.v1.employee.humanity_sync_requested', [
+            $envelope = $this->events->make('operations.v1.employee.tcp_sync_requested', [
                 'employee_id' => $employee->id,
                 'store_number' => $storeNumber,
                 'requested_by' => $actorUserId,
@@ -68,7 +68,7 @@ class EmployeeSyncRequestService
                 'attempts' => $syncRequest->attempts,
             ], $httpRequest);
 
-            $row = $this->outbox->record('operations.v1.employee.humanity_sync_requested', $envelope);
+            $row = $this->outbox->record('operations.v1.employee.tcp_sync_requested', $envelope);
 
             PublishOutboxEventJob::dispatch($row->id);
 
@@ -83,8 +83,15 @@ class EmployeeSyncRequestService
         return [
             'employee_id' => (string) $employee->id,
             'employee_name' => trim("{$employee->first_name} {$employee->last_name}"),
+            // 'synced' keeps meaning "can be scheduled" (needs the Humanity
+            // link — see ShiftWriteService::requireHumanityLink). tcp_employee_id
+            // / synced_to_tcp show the earlier step this request loop actually
+            // performs: TCP linkage happens first, Humanity linkage follows via
+            // TCP's connector + a later humanity:sync-employees run.
             'humanity_employee_id' => $employee->humanity_employee_id,
             'synced' => $employee->isLinkedToHumanity(),
+            'tcp_employee_id' => $employee->tcp_employee_id,
+            'synced_to_tcp' => $employee->isLinkedToTcp(),
             'sync_request' => $syncRequest === null ? null : [
                 'status' => $syncRequest->status,
                 'requested_at' => $syncRequest->requested_at?->toIso8601String(),

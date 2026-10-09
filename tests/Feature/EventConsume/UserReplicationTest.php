@@ -41,7 +41,18 @@ class UserReplicationTest extends TestCase
         $this->assertNotNull($user);
         $this->assertSame(7, $user->id);
         $this->assertSame('dana@example.com', $user->email);
-        $this->assertTrue($user->is_active);
+    }
+
+    public function test_it_stores_identity_only(): void
+    {
+        app(UserCreatedHandler::class)->handle($this->createdEvent());
+
+        // Roles, verification state and active status all live in pizzasys,
+        // which is consulted on every request — a local copy could only drift.
+        $columns = array_keys(User::find(7)->getAttributes());
+        sort($columns);
+
+        $this->assertSame(['created_at', 'email', 'id', 'name', 'updated_at'], $columns);
     }
 
     public function test_the_users_table_stores_no_password(): void
@@ -82,26 +93,22 @@ class UserReplicationTest extends TestCase
         ]);
     }
 
-    public function test_delete_deactivates_rather_than_removing_the_row(): void
+    public function test_delete_keeps_the_row_so_authorship_survives(): void
     {
         app(UserCreatedHandler::class)->handle($this->createdEvent());
 
         app(UserDeletedHandler::class)->handle(['data' => ['user_id' => 7]]);
 
-        $user = User::find(7);
-        // The row survives so scheduling rows keep their authorship.
-        $this->assertNotNull($user);
-        $this->assertFalse($user->is_active);
+        // Deleting would erase who built a schedule
+        // (shifts.created_by_user_id). Access is unaffected: pizzasys stops
+        // issuing tokens, and every request here is verified against it.
+        $this->assertNotNull(User::find(7));
     }
 
-    public function test_a_recreated_user_is_reactivated(): void
+    public function test_delete_still_validates_its_payload(): void
     {
-        app(UserCreatedHandler::class)->handle($this->createdEvent());
-        app(UserDeletedHandler::class)->handle(['data' => ['user_id' => 7]]);
+        $this->expectExceptionMessage('missing/invalid user_id');
 
-        app(UserCreatedHandler::class)->handle($this->createdEvent());
-
-        $this->assertTrue(User::find(7)->is_active);
-        $this->assertSame(1, User::count());
+        app(UserDeletedHandler::class)->handle(['data' => []]);
     }
 }

@@ -29,6 +29,8 @@ class ScheduleWeekAssembler
         private readonly AvailabilityProjector $availability,
         private readonly LaborCostCalculator $labor,
         private readonly EmployeePresenter $employees,
+        private readonly StoreTimezoneResolver $timezones,
+        private readonly ActualShiftService $actuals,
     ) {
     }
 
@@ -92,7 +94,7 @@ class ScheduleWeekAssembler
             'store' => [
                 'store_number' => $store->store_number,
                 'name' => $store->name,
-                'timezone' => $store->timezone,
+                'timezone' => $this->timezones->for($store),
                 'open_time' => substr((string) $settings->open_time, 0, 5),
                 'close_time' => substr((string) $settings->close_time, 0, 5),
                 'slot_minutes' => (int) $settings->slot_minutes,
@@ -125,7 +127,7 @@ class ScheduleWeekAssembler
     private function roster(Store $store, array $scheduledEmployeeIds, array $filters): Collection
     {
         $query = Employee::query()
-            ->with(['positions', 'contacts', 'availabilityDays.times'])
+            ->with(['availabilityDays.times'])
             ->assignedToStore((string) $store->store_number)
             ->where(function ($q) use ($scheduledEmployeeIds) {
                 $q->where('active', true);
@@ -152,13 +154,9 @@ class ScheduleWeekAssembler
             $departments = $this->employees->departmentsByPosition($store);
 
             $employees = $employees->filter(function (Employee $employee) use ($departments, $department) {
-                foreach ($employee->positions as $position) {
-                    if (($departments[$position->id] ?? null) === $department) {
-                        return true;
-                    }
-                }
+                $label = $employee->position_label;
 
-                return false;
+                return $label !== null && ($departments[$label] ?? null) === $department;
             })->values();
         }
 
@@ -167,29 +165,24 @@ class ScheduleWeekAssembler
 
     private function actualShiftDtos(Store $store, string $from, string $to, CarbonImmutable $weekStart, array $employeeIds): array
     {
+        // Presented by ActualShiftService, not here. This used to be a second
+        // copy of that method, and the two had already drifted — which is how a
+        // field could mean one thing in the week payload and another on the
+        // endpoint that wrote it.
+        //
+        // `segments` is eager-loaded because source() is derived from it, and a
+        // full week of actuals would otherwise be a query per row.
         return ActualShift::query()
+            ->with('segments')
             ->where('store_id', $store->id)
             ->whereDate('shift_date', '>=', $from)
             ->whereDate('shift_date', '<=', $to)
             ->get()
             ->filter(fn (ActualShift $actual) => in_array((string) $actual->employee_id, $employeeIds, true))
-            ->map(fn (ActualShift $actual) => [
-                'id' => (string) $actual->id,
-                'employee_id' => (string) $actual->employee_id,
-                'planned_shift_id' => $actual->shift_assignment_id === null
-                    ? null
-                    : (string) $actual->shift_assignment_id,
-                'shift_date' => $actual->shift_date?->toDateString(),
-                'day_index' => $this->weeks->dayIndexFor(CarbonImmutable::parse($actual->shift_date), $weekStart),
-                'start_time' => substr((string) $actual->start_time, 0, 5),
-                'end_time' => substr((string) $actual->end_time, 0, 5),
-                'duration_minutes' => (int) $actual->duration_minutes,
-                'label' => $actual->label,
-                'type' => $actual->shift_type,
-                'status' => $actual->status,
-                'note' => $actual->note,
-                'source' => $actual->source,
-            ])
+            ->map(fn (ActualShift $actual) => $this->actuals->present(
+                $actual,
+                $this->weeks->dayIndexFor(CarbonImmutable::parse($actual->shift_date), $weekStart)
+            ))
             ->values()
             ->all();
     }
