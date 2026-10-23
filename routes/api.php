@@ -24,10 +24,15 @@ use Illuminate\Support\Facades\Route;
 | Updates are POST, not PUT/PATCH: the house convention across these services.
 | Bulk endpoints return 202 + a batch id; they fan out into dozens of Humanity
 | calls against an undocumented rate limit and cannot be synchronous.
+|
+| Rate limits (AppServiceProvider): `throttle:api` covers every route, ahead of
+| the pizzasys call. Routes that build the whole grid, fan out to Humanity or
+| punch TCP add their own tier on top. Poll routes REPLACE it with `api-poll`
+| instead, since the general read limit is lower and would cap them.
 */
 
-Route::prefix('v1')->middleware('auth.token.store')->group(function (): void {
-    Route::get('health', [HealthController::class, 'show'])->name('api.v1.health');
+Route::prefix('v1')->middleware(['throttle:api', 'auth.token.store'])->group(function (): void {
+    Route::get('health', [HealthController::class, 'show'])->withoutMiddleware('throttle:api')->middleware('throttle:api-poll')->name('api.v1.health');
 
     // ---- the skills list (shared by every store; edited by the head) -------
     Route::get('skills', [SkillController::class, 'index'])->name('api.v1.skills.index');
@@ -37,10 +42,10 @@ Route::prefix('v1')->middleware('auth.token.store')->group(function (): void {
 
     Route::prefix('stores/{storeId}')->group(function (): void {
         // ---- the one call that boots the whole grid -------------------------
-        Route::get('schedule/week', [ScheduleController::class, 'week'])->name('api.v1.schedule.week');
+        Route::get('schedule/week', [ScheduleController::class, 'week'])->middleware('throttle:api-heavy')->name('api.v1.schedule.week');
         Route::get('schedule/employees', [ScheduleController::class, 'employees'])->name('api.v1.schedule.employees');
         Route::get('schedule/departments', [ScheduleController::class, 'departments'])->name('api.v1.schedule.departments');
-        Route::get('schedule/insights', [ScheduleController::class, 'insights'])->name('api.v1.schedule.insights');
+        Route::get('schedule/insights', [ScheduleController::class, 'insights'])->middleware('throttle:api-heavy')->name('api.v1.schedule.insights');
 
         // ---- planned shifts (write-through to Humanity) ---------------------
         Route::post('shifts', [ShiftController::class, 'store'])->name('api.v1.shifts.store');
@@ -103,24 +108,24 @@ Route::prefix('v1')->middleware('auth.token.store')->group(function (): void {
         Route::delete('published-schedules/{publishedId}', [PublishedScheduleController::class, 'destroy'])->whereNumber('publishedId')->name('api.v1.published.destroy');
 
         // ---- bulk (always async: 202 + batch id) -----------------------------
-        Route::post('schedule/bulk/create-shifts', [ScheduleBulkController::class, 'createShifts'])->name('api.v1.bulk.create-shifts');
-        Route::post('schedule/bulk/copy-week', [ScheduleBulkController::class, 'copyWeek'])->name('api.v1.bulk.copy-week');
-        Route::post('schedule/bulk/apply-template', [ScheduleBulkController::class, 'applyTemplate'])->name('api.v1.bulk.apply-template');
-        Route::post('schedule/bulk/clear-week', [ScheduleBulkController::class, 'clearWeek'])->name('api.v1.bulk.clear-week');
-        Route::get('schedule/bulk/{batchId}', [ScheduleBulkController::class, 'show'])->name('api.v1.bulk.show');
-        Route::post('schedule/bulk/{batchId}/retry-failed', [ScheduleBulkController::class, 'retryFailed'])->name('api.v1.bulk.retry');
+        Route::post('schedule/bulk/create-shifts', [ScheduleBulkController::class, 'createShifts'])->middleware('throttle:external-fanout')->name('api.v1.bulk.create-shifts');
+        Route::post('schedule/bulk/copy-week', [ScheduleBulkController::class, 'copyWeek'])->middleware('throttle:external-fanout')->name('api.v1.bulk.copy-week');
+        Route::post('schedule/bulk/apply-template', [ScheduleBulkController::class, 'applyTemplate'])->middleware('throttle:external-fanout')->name('api.v1.bulk.apply-template');
+        Route::post('schedule/bulk/clear-week', [ScheduleBulkController::class, 'clearWeek'])->middleware('throttle:external-fanout')->name('api.v1.bulk.clear-week');
+        Route::get('schedule/bulk/{batchId}', [ScheduleBulkController::class, 'show'])->withoutMiddleware('throttle:api')->middleware('throttle:api-poll')->name('api.v1.bulk.show');
+        Route::post('schedule/bulk/{batchId}/retry-failed', [ScheduleBulkController::class, 'retryFailed'])->middleware('throttle:external-fanout')->name('api.v1.bulk.retry');
 
         // ---- clocking (TCP Manager+, NOT Humanity) ---------------------------
         // Worked time lives in TCP; shifts live in Humanity. Kept apart on
         // purpose — nothing here touches the `shifts` tables.
-        Route::post('employees/{employeeId}/clock-in', [ClockController::class, 'clockIn'])->whereNumber('employeeId')->name('api.v1.clock.in');
-        Route::post('employees/{employeeId}/clock-out', [ClockController::class, 'clockOut'])->whereNumber('employeeId')->name('api.v1.clock.out');
-        Route::get('employees/{employeeId}/clock-status', [ClockController::class, 'status'])->whereNumber('employeeId')->name('api.v1.clock.status');
+        Route::post('employees/{employeeId}/clock-in', [ClockController::class, 'clockIn'])->whereNumber('employeeId')->middleware('throttle:clocking')->name('api.v1.clock.in');
+        Route::post('employees/{employeeId}/clock-out', [ClockController::class, 'clockOut'])->whereNumber('employeeId')->middleware('throttle:clocking')->name('api.v1.clock.out');
+        Route::get('employees/{employeeId}/clock-status', [ClockController::class, 'status'])->whereNumber('employeeId')->withoutMiddleware('throttle:api')->middleware('throttle:api-poll')->name('api.v1.clock.status');
 
         // Everyone on the clock at this store, in one query. No TCP call, so a
         // dashboard may poll it — which was not true of clock-status, where each
         // miss cost a vendor request per employee.
-        Route::get('on-the-clock', [ClockController::class, 'onTheClock'])->name('api.v1.clock.on-the-clock');
+        Route::get('on-the-clock', [ClockController::class, 'onTheClock'])->withoutMiddleware('throttle:api')->middleware('throttle:api-poll')->name('api.v1.clock.on-the-clock');
 
         /*
          | Break punches, registered only when tcp.breaks_enabled is on — and it
@@ -137,8 +142,8 @@ Route::prefix('v1')->middleware('auth.token.store')->group(function (): void {
          | physical clock and TCP will split it regardless of what we offer.
          */
         if (config('tcp.breaks_enabled')) {
-            Route::post('employees/{employeeId}/break-start', [ClockController::class, 'breakStart'])->whereNumber('employeeId')->name('api.v1.clock.break-start');
-            Route::post('employees/{employeeId}/break-end', [ClockController::class, 'breakEnd'])->whereNumber('employeeId')->name('api.v1.clock.break-end');
+            Route::post('employees/{employeeId}/break-start', [ClockController::class, 'breakStart'])->whereNumber('employeeId')->middleware('throttle:clocking')->name('api.v1.clock.break-start');
+            Route::post('employees/{employeeId}/break-end', [ClockController::class, 'breakEnd'])->whereNumber('employeeId')->middleware('throttle:clocking')->name('api.v1.clock.break-end');
         }
 
         // ---- employee skills (one rating per employee, seen from any store) --
@@ -150,7 +155,7 @@ Route::prefix('v1')->middleware('auth.token.store')->group(function (): void {
             ->whereNumber('employeeId')->whereNumber('skillId')->name('api.v1.employee-skills.destroy');
 
         // ---- the unsynced-employee loop ---------------------------------------
-        Route::get('employees/{employeeId}/sync-status', [EmployeeSyncController::class, 'status'])->whereNumber('employeeId')->name('api.v1.employees.sync-status');
-        Route::post('employees/{employeeId}/humanity-sync', [EmployeeSyncController::class, 'request'])->whereNumber('employeeId')->name('api.v1.employees.humanity-sync');
+        Route::get('employees/{employeeId}/sync-status', [EmployeeSyncController::class, 'status'])->whereNumber('employeeId')->withoutMiddleware('throttle:api')->middleware('throttle:api-poll')->name('api.v1.employees.sync-status');
+        Route::post('employees/{employeeId}/humanity-sync', [EmployeeSyncController::class, 'request'])->whereNumber('employeeId')->middleware('throttle:external-fanout')->name('api.v1.employees.humanity-sync');
     });
 });
