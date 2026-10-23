@@ -43,6 +43,7 @@ class EmployeeCreatedHandler implements EventHandlerInterface
             $attributes = [
                 'first_name' => $firstName,
                 'last_name' => $lastName,
+                'birth_date' => $this->birthDate(data_get($payload, 'obsession')),
                 'active' => $this->anyActive($memberships),
                 'current_status' => $this->latestStatus($statusHistories),
                 'hourly_rate' => $this->currentHourlyRate((array) data_get($payload, 'pay_histories', [])),

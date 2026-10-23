@@ -24,7 +24,9 @@ use App\Models\Store;
  *
  * The snapshot still carries HiringPizza's full HR record — pay history,
  * contacts, demographics, payroll ids. We deliberately read only the few parts
- * a scheduling service needs and let the rest fall on the floor.
+ * a scheduling service needs and let the rest fall on the floor. From the
+ * `obsession` block that is the birth date alone (employee skills' minor
+ * warning); the rest of it is dropped.
  */
 trait ReplicatesEmployees
 {
@@ -257,6 +259,23 @@ trait ReplicatesEmployees
         $rate = $effectiveRate ?? $newestRate;
 
         return $rate === null ? null : number_format((float) $rate, 4, '.', '');
+    }
+
+    /**
+     * The date part of obsession.birth_date. Hiring casts it to a date, so it
+     * arrives as an ISO datetime ("1995-04-02T00:00:00.000000Z"); the first ten
+     * characters are the calendar date it was entered as, with no timezone
+     * shift applied.
+     */
+    protected function birthDate(mixed $obsession): ?string
+    {
+        $value = is_array($obsession) ? $this->stringOrNull(data_get($obsession, 'birth_date')) : null;
+
+        if ($value === null || preg_match('/^\d{4}-\d{2}-\d{2}/', $value) !== 1) {
+            return null;
+        }
+
+        return substr($value, 0, 10);
     }
 
     /** The employee's current position, as text. Hiring sorts newest-first. */

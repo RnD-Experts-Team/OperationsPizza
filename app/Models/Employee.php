@@ -17,6 +17,10 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * their availability, the two external links, and their position as text. The
  * snapshot still ships pay history, contacts and demographics; we drop them on
  * arrival rather than store an HR record we have no business holding.
+ *
+ * The one exception is the birth date, kept only so employee skills can warn
+ * when a minor is rated on a skill with a minimum age. It is never returned by
+ * the API; isMinor()/ageAtLeast() are what leave this model.
  */
 class Employee extends Model
 {
@@ -37,6 +41,7 @@ class Employee extends Model
         'id',
         'first_name',
         'last_name',
+        'birth_date',
         'active',
         'current_status',
         'hourly_rate',
@@ -51,6 +56,7 @@ class Employee extends Model
     protected function casts(): array
     {
         return [
+            'birth_date' => 'date',
             'active' => 'boolean',
             'hourly_rate' => 'decimal:4',
             'humanity_synced_at' => 'datetime',
@@ -69,6 +75,11 @@ class Employee extends Model
         return $this->hasMany(EmployeeStore::class);
     }
 
+    public function skills(): HasMany
+    {
+        return $this->hasMany(EmployeeSkill::class);
+    }
+
     public function syncRequest(): \Illuminate\Database\Eloquent\Relations\HasOne
     {
         return $this->hasOne(EmployeeSyncRequest::class);
@@ -82,6 +93,21 @@ class Employee extends Model
     public function scopeSchedulable(Builder $query): Builder
     {
         return $query->where('active', true);
+    }
+
+    /** Null when hiring has no birth date for them: unknown, not "adult". */
+    public function isMinor(): ?bool
+    {
+        $atLeast = $this->ageAtLeast(18);
+
+        return $atLeast === null ? null : !$atLeast;
+    }
+
+    public function ageAtLeast(int $years): ?bool
+    {
+        return $this->birth_date === null
+            ? null
+            : $this->birth_date->copy()->addYears($years)->lte(today());
     }
 
     public function isLinkedToHumanity(): bool
