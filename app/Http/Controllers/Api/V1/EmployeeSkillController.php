@@ -75,21 +75,34 @@ class EmployeeSkillController extends Controller
         return response()->json(null, 204);
     }
 
-    /** Every active employee of the store against every skill. */
-    public function overview(string $storeId): JsonResponse
+    /**
+     * Every active employee of the given stores against every skill.
+     *
+     * Store-less like HiringPizza's all-stores employee list: `storeIds[]`
+     * (store codes) narrows it, and pizzasys checks the caller at each of them.
+     * None sent is every store, which only a global holder gets past pizzasys.
+     */
+    public function overview(Request $request): JsonResponse
     {
-        $store = $this->resolveStore($storeId);
+        $validated = $request->validate([
+            'storeIds' => ['sometimes', 'array', 'max:100'],
+            'storeIds.*' => ['string', 'max:20'],
+        ]);
+        $storeNumbers = array_values(array_unique($validated['storeIds'] ?? []));
 
         $employees = Employee::query()
-            ->assignedToStore((string) $store->store_number)
             ->schedulable()
-            ->with('skills')
+            ->when($storeNumbers !== [], fn ($query) => $query->whereHas(
+                'stores',
+                fn ($q) => $q->whereIn('store_number', $storeNumbers)
+            ))
+            ->with(['skills', 'stores'])
             ->orderBy('first_name')
             ->orderBy('last_name')
             ->get();
 
         return response()->json([
-            'data' => $this->presenter->overview($employees, Skill::query()->orderBy('id')->get()),
+            'data' => $this->presenter->overview($employees, Skill::query()->orderBy('id')->get(), $storeNumbers),
         ]);
     }
 

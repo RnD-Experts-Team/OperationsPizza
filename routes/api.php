@@ -17,7 +17,7 @@ use Illuminate\Support\Facades\Route;
 
 /*
 | Every route is verified against pizzasys by AuthTokenStoreScopeMiddleware,
-| and all but health and the skills list are store-scoped. {storeId} is the
+| and all but health and the skills routes are store-scoped. {storeId} is the
 | store_number STRING ("03759-00001"), matching HiringPizza — not the numeric
 | pk NATS events use.
 |
@@ -39,6 +39,10 @@ Route::prefix('v1')->middleware(['throttle:api', 'auth.token.store'])->group(fun
     Route::post('skills', [SkillController::class, 'store'])->name('api.v1.skills.store');
     Route::post('skills/{skillId}', [SkillController::class, 'update'])->whereNumber('skillId')->name('api.v1.skills.update');
     Route::delete('skills/{skillId}', [SkillController::class, 'destroy'])->whereNumber('skillId')->name('api.v1.skills.destroy');
+
+    // Employees of several stores (?storeIds[]=…) against every skill. Store-less
+    // like hiring's all-stores employee list; pizzasys checks each store asked for.
+    Route::get('skills/overview', [EmployeeSkillController::class, 'overview'])->name('api.v1.employee-skills.overview');
 
     Route::prefix('stores/{storeId}')->group(function (): void {
         // ---- the one call that boots the whole grid -------------------------
@@ -147,7 +151,6 @@ Route::prefix('v1')->middleware(['throttle:api', 'auth.token.store'])->group(fun
         }
 
         // ---- employee skills (one rating per employee, seen from any store) --
-        Route::get('skills/overview', [EmployeeSkillController::class, 'overview'])->name('api.v1.employee-skills.overview');
         Route::get('employees/{employeeId}/skills', [EmployeeSkillController::class, 'index'])->whereNumber('employeeId')->name('api.v1.employee-skills.index');
         Route::post('employees/{employeeId}/skills/{skillId}', [EmployeeSkillController::class, 'upsert'])
             ->whereNumber('employeeId')->whereNumber('skillId')->name('api.v1.employee-skills.upsert');

@@ -225,7 +225,7 @@ class SkillsApiTest extends TestCase
         $this->rate(502, $this->dough, 2)->assertOk();
         $this->rate(502, $this->register, 4)->assertOk();
 
-        $data = $this->getJson('/api/v1/stores/03759-00001/skills/overview', $this->headers())
+        $data = $this->getJson('/api/v1/skills/overview?storeIds[]=03759-00001', $this->headers())
             ->assertOk()
             ->json('data');
 
@@ -236,8 +236,33 @@ class SkillsApiTest extends TestCase
 
         $employees = collect($data['employees'])->keyBy('id');
         $this->assertSame([(string) $this->dough->id], $employees[502]['alert_skill_ids']);
+        $this->assertCount(2, $employees[502]['restricted_skill_ids']);
         $this->assertSame(4, $employees[502]['ratings'][(string) $this->register->id]['rating']);
+        $this->assertSame(['03759-00001'], $employees[502]['store_numbers']);
         $this->assertSame([], $employees[501]['alert_skill_ids']);
+        $this->assertSame([], $employees[501]['restricted_skill_ids']);
         $this->assertSame([], $employees[503]['ratings']);
+    }
+
+    public function test_the_overview_spans_several_stores_or_all_of_them(): void
+    {
+        EmployeeStore::query()->create([
+            'employee_id' => 501, 'store_number' => '03759-00002', 'store_id' => 2, 'status' => 'hired', 'active' => true,
+        ]);
+
+        $both = $this->getJson('/api/v1/skills/overview?storeIds[]=03759-00001&storeIds[]=03759-00002', $this->headers())
+            ->assertOk()
+            ->json('data.employees');
+
+        $this->assertSame(['504', '502', '501', '503'], array_column($both, 'id'));
+        // Each employee once, with every asked-for store they work at.
+        $this->assertSame(['03759-00001', '03759-00002'], collect($both)->firstWhere('id', '501')['store_numbers']);
+
+        $onlyB = $this->getJson('/api/v1/skills/overview?storeIds[]=03759-00002', $this->headers())->json('data.employees');
+        $this->assertSame(['504', '501'], array_column($onlyB, 'id'));
+        $this->assertSame(['03759-00002'], collect($onlyB)->firstWhere('id', '501')['store_numbers']);
+
+        $all = $this->getJson('/api/v1/skills/overview', $this->headers())->json('data.employees');
+        $this->assertCount(4, $all);
     }
 }

@@ -58,16 +58,20 @@ class SkillPresenter
     }
 
     /**
-     * @param  Collection<int, Employee>  $employees  with `skills` loaded
+     * `store_numbers` is each employee's stores among the ones asked for (all
+     * of them when none were), so the client knows where it may rate them.
+     *
+     * @param  Collection<int, Employee>  $employees  with `skills` and `stores` loaded
      * @param  Collection<int, Skill>  $skills
+     * @param  array<int, string>  $storeNumbers
      */
-    public function overview(Collection $employees, Collection $skills): array
+    public function overview(Collection $employees, Collection $skills, array $storeNumbers = []): array
     {
         $skillsById = $skills->keyBy('id');
 
         return [
             'skills' => $skills->map(fn (Skill $skill) => $this->skill($skill))->values()->all(),
-            'employees' => $employees->map(function (Employee $employee) use ($skillsById) {
+            'employees' => $employees->map(function (Employee $employee) use ($skills, $skillsById, $storeNumbers) {
                 $ratings = [];
                 $alerts = [];
 
@@ -84,9 +88,24 @@ class SkillPresenter
                     }
                 }
 
+                $stores = $employee->stores->pluck('store_number')
+                    ->when($storeNumbers !== [], fn ($all) => $all->intersect($storeNumbers))
+                    ->unique()
+                    ->sort()
+                    ->values()
+                    ->all();
+
                 return $this->employee($employee) + [
+                    'store_numbers' => $stores,
                     // An object even when empty, so the client can index it.
                     'ratings' => (object) $ratings,
+                    // Under the skill's minimum age, rated or not: the warning
+                    // shown before rating them on it.
+                    'restricted_skill_ids' => $skills
+                        ->filter(fn (Skill $skill) => $skill->isRestrictedFor($employee))
+                        ->map(fn (Skill $skill) => (string) $skill->id)
+                        ->values()
+                        ->all(),
                     'alert_skill_ids' => $alerts,
                 ];
             })->values()->all(),
