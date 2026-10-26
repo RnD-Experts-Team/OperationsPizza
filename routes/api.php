@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\V1\ActualShiftController;
 use App\Http\Controllers\Api\V1\AvailabilityController;
 use App\Http\Controllers\Api\V1\ClockController;
+use App\Http\Controllers\Api\V1\EmployeeSkillController;
 use App\Http\Controllers\Api\V1\EmployeeSyncController;
 use App\Http\Controllers\Api\V1\HealthController;
 use App\Http\Controllers\Api\V1\PublishedScheduleController;
@@ -10,13 +11,15 @@ use App\Http\Controllers\Api\V1\ScheduleBulkController;
 use App\Http\Controllers\Api\V1\ScheduleController;
 use App\Http\Controllers\Api\V1\ScheduleTemplateController;
 use App\Http\Controllers\Api\V1\ShiftController;
+use App\Http\Controllers\Api\V1\SkillController;
 use App\Http\Controllers\Api\V1\TimeOffController;
 use Illuminate\Support\Facades\Route;
 
 /*
-| Every route is store-scoped and verified against pizzasys by
-| AuthTokenStoreScopeMiddleware. {storeId} is the store_number STRING
-| ("03759-00001"), matching HiringPizza — not the numeric pk NATS events use.
+| Every route is verified against pizzasys by AuthTokenStoreScopeMiddleware,
+| and all but health and the skills routes are store-scoped. {storeId} is the
+| store_number STRING ("03759-00001"), matching HiringPizza — not the numeric
+| pk NATS events use.
 |
 | Updates are POST, not PUT/PATCH: the house convention across these services.
 | Bulk endpoints return 202 + a batch id; they fan out into dozens of Humanity
@@ -30,6 +33,16 @@ use Illuminate\Support\Facades\Route;
 
 Route::prefix('v1')->middleware(['throttle:api', 'auth.token.store'])->group(function (): void {
     Route::get('health', [HealthController::class, 'show'])->withoutMiddleware('throttle:api')->middleware('throttle:api-poll')->name('api.v1.health');
+
+    // ---- the skills list (shared by every store; edited by the head) -------
+    Route::get('skills', [SkillController::class, 'index'])->name('api.v1.skills.index');
+    Route::post('skills', [SkillController::class, 'store'])->name('api.v1.skills.store');
+    Route::post('skills/{skillId}', [SkillController::class, 'update'])->whereNumber('skillId')->name('api.v1.skills.update');
+    Route::delete('skills/{skillId}', [SkillController::class, 'destroy'])->whereNumber('skillId')->name('api.v1.skills.destroy');
+
+    // Employees of several stores (?storeIds[]=…) against every skill. Store-less
+    // like hiring's all-stores employee list; pizzasys checks each store asked for.
+    Route::get('skills/overview', [EmployeeSkillController::class, 'overview'])->name('api.v1.employee-skills.overview');
 
     Route::prefix('stores/{storeId}')->group(function (): void {
         // ---- the one call that boots the whole grid -------------------------
@@ -136,6 +149,13 @@ Route::prefix('v1')->middleware(['throttle:api', 'auth.token.store'])->group(fun
             Route::post('employees/{employeeId}/break-start', [ClockController::class, 'breakStart'])->whereNumber('employeeId')->middleware('throttle:clocking')->name('api.v1.clock.break-start');
             Route::post('employees/{employeeId}/break-end', [ClockController::class, 'breakEnd'])->whereNumber('employeeId')->middleware('throttle:clocking')->name('api.v1.clock.break-end');
         }
+
+        // ---- employee skills (one rating per employee, seen from any store) --
+        Route::get('employees/{employeeId}/skills', [EmployeeSkillController::class, 'index'])->whereNumber('employeeId')->name('api.v1.employee-skills.index');
+        Route::post('employees/{employeeId}/skills/{skillId}', [EmployeeSkillController::class, 'upsert'])
+            ->whereNumber('employeeId')->whereNumber('skillId')->name('api.v1.employee-skills.upsert');
+        Route::delete('employees/{employeeId}/skills/{skillId}', [EmployeeSkillController::class, 'destroy'])
+            ->whereNumber('employeeId')->whereNumber('skillId')->name('api.v1.employee-skills.destroy');
 
         // ---- the unsynced-employee loop ---------------------------------------
         Route::get('employees/{employeeId}/sync-status', [EmployeeSyncController::class, 'status'])->whereNumber('employeeId')->withoutMiddleware('throttle:api')->middleware('throttle:api-poll')->name('api.v1.employees.sync-status');

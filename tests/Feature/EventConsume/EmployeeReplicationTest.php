@@ -71,7 +71,8 @@ class EmployeeReplicationTest extends TestCase
                     'ids' => [
                         ['id_value' => 'A-123', 'id_type' => ['label' => 'Altametrics ID']],
                     ],
-                    'obsession' => ['birth_date' => '1995-04-02', 'image_url' => 'https://example.test/marco.jpg'],
+                    // Hiring's date cast serialises as a full ISO datetime.
+                    'obsession' => ['birth_date' => '1995-04-02T00:00:00.000000Z', 'image_url' => 'https://example.test/marco.jpg'],
                 ], $employeeOverrides),
             ],
         ];
@@ -88,8 +89,10 @@ class EmployeeReplicationTest extends TestCase
         $this->assertSame('Marco', $employee->first_name);
         $this->assertSame('Rossi', $employee->last_name);
         // Position collapses to a label; the wage collapses to one rate. The
-        // snapshot still ships contacts/demographics — we drop them on arrival.
+        // snapshot still ships contacts/demographics — we drop them on arrival,
+        // except the birth date (employee skills' minor warning).
         $this->assertSame('Pizzaiolo', $employee->position_label);
+        $this->assertSame('1995-04-02', $employee->birth_date->toDateString());
         $this->assertSame('16.5000', $employee->hourly_rate);
         $this->assertSame('03759-00001', $employee->stores->first()->store_number);
         // store_id backfilled because the store had already replicated.
@@ -165,6 +168,51 @@ class EmployeeReplicationTest extends TestCase
         $this->assertSame('Marco', $employee->first_name);
         $this->assertSame('Pizzaiolo', $employee->position_label);
         $this->assertSame('16.5000', $employee->hourly_rate);
+    }
+
+    public function test_an_obsession_delta_updates_the_birth_date(): void
+    {
+        app(EmployeeCreatedHandler::class)->handle($this->createdEvent());
+
+        app(EmployeeUpdatedHandler::class)->handle([
+            'time' => '2026-08-02T12:00:00+00:00',
+            'data' => [
+                'employee_id' => 501,
+                'changed_fields' => [
+                    'obsession' => [
+                        'from' => ['birth_date' => '1995-04-02T00:00:00.000000Z'],
+                        'to' => ['birth_date' => '2010-09-30T00:00:00.000000Z', 't_shirt' => 'M'],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->assertSame('2010-09-30', Employee::find(501)->birth_date->toDateString());
+
+        app(EmployeeUpdatedHandler::class)->handle([
+            'time' => '2026-08-03T12:00:00+00:00',
+            'data' => [
+                'employee_id' => 501,
+                'changed_fields' => ['obsession' => ['from' => ['birth_date' => '2010-09-30'], 'to' => null]],
+            ],
+        ]);
+
+        $this->assertNull(Employee::find(501)->birth_date);
+    }
+
+    public function test_an_update_without_obsession_keeps_the_birth_date(): void
+    {
+        app(EmployeeCreatedHandler::class)->handle($this->createdEvent());
+
+        app(EmployeeUpdatedHandler::class)->handle([
+            'time' => '2026-08-02T12:00:00+00:00',
+            'data' => [
+                'employee_id' => 501,
+                'changed_fields' => ['last_name' => ['from' => 'Rossi', 'to' => 'Bianchi']],
+            ],
+        ]);
+
+        $this->assertSame('1995-04-02', Employee::find(501)->birth_date->toDateString());
     }
 
     public function test_a_collection_delta_replaces_the_whole_collection(): void

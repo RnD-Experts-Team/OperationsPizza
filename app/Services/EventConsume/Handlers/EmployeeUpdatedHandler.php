@@ -63,6 +63,12 @@ class EmployeeUpdatedHandler implements EventHandlerInterface
                 }
             }
 
+            // The whole obsession object arrives in the delta; a null `to` means
+            // hiring dropped it, so the birth date goes with it.
+            if (array_key_exists('obsession', $changed)) {
+                $update['birth_date'] = $this->birthDate(data_get($changed, 'obsession.to'));
+            }
+
             $payHistories = $this->resolveCollection($event, $payload, 'pay_histories');
             if ($payHistories !== null) {
                 $update['hourly_rate'] = $this->currentHourlyRate($payHistories);
