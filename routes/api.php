@@ -43,6 +43,9 @@ Route::prefix('v1')->middleware(['throttle:api', 'auth.token.store'])->group(fun
     // Employees of several stores (?storeIds[]=…) against every skill. Store-less
     // like hiring's all-stores employee list; pizzasys checks each store asked for.
     Route::get('skills/overview', [EmployeeSkillController::class, 'overview'])->name('api.v1.employee-skills.overview');
+    // Unified calendar feed. Stores are in the query (stores=a,b), not the path:
+    // the pizzasys rule must read store_id_sources.query ["stores"] with policy "all".
+    Route::get('calendar/feed', \App\Http\Controllers\Api\V1\CalendarFeedController::class)->name('api.v1.calendar.feed');
 
     Route::prefix('stores/{storeId}')->group(function (): void {
         // ---- the one call that boots the whole grid -------------------------
