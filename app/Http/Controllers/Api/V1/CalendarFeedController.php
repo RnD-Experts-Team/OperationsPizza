@@ -11,7 +11,11 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 /**
- * GET /api/v1/calendar/feed?stores=03795-00001[,…]&from=YYYY-MM-DD&to=YYYY-MM-DD
+ * GET /api/v1/calendar/feed?stores=03795-00001[,…]&from=YYYY-MM-DD&to=YYYY-MM-DD[&group=day]
+ *
+ * `group=day` (year view, all-stores grid): instead of `events`, `days` — each
+ * store's planned shifts per day as done / missed / scheduled, the same numbers
+ * as `shift_day` — for up to 371 days, counted by the database in one query.
  *
  * Operations' part of the unified calendar (calendar-feed/v1). Kept light — no
  * event per shift:
@@ -37,20 +41,26 @@ class CalendarFeedController extends Controller
 
     private const MAX_DAYS = 62;
 
+    /** With group=day: a year — a 53-week fiscal year is 371 days. */
+    private const MAX_DAYS_GROUPED = 371;
+
     public function __invoke(Request $request): JsonResponse
     {
         $data = $request->validate([
             'stores' => ['required', 'string'],
             'from'   => ['required', 'date_format:Y-m-d'],
             'to'     => ['required', 'date_format:Y-m-d', 'after_or_equal:from'],
+            'group'  => ['nullable', 'in:day'],
         ]);
+        $grouped = ($data['group'] ?? null) === 'day';
+        $maxDays = $grouped ? self::MAX_DAYS_GROUPED : self::MAX_DAYS;
 
         $numbers = array_values(array_unique(array_filter(array_map('trim', explode(',', $data['stores'])))));
         if ($numbers === [] || count($numbers) > self::MAX_STORES) {
             throw ValidationException::withMessages(['stores' => 'Send 1 to ' . self::MAX_STORES . ' store numbers.']);
         }
-        if (Carbon::parse($data['from'])->diffInDays(Carbon::parse($data['to'])) > self::MAX_DAYS) {
-            throw ValidationException::withMessages(['to' => 'Date range may not exceed ' . self::MAX_DAYS . ' days.']);
+        if (Carbon::parse($data['from'])->diffInDays(Carbon::parse($data['to'])) > $maxDays) {
+            throw ValidationException::withMessages(['to' => "Date range may not exceed {$maxDays} days."]);
         }
 
         // id => store_number
@@ -62,6 +72,21 @@ class CalendarFeedController extends Controller
 
         $from = $data['from'];
         $to = $data['to'];
+
+        if ($grouped) {
+            $days = $this->days($stores, $from, $to);
+
+            return response()->json([
+                'contract'     => 'calendar-feed/v1',
+                'source'       => 'operations',
+                'generated_at' => $this->utc(now()),
+                'range'        => ['from' => $from, 'to' => $to],
+                'stores'       => array_map(fn ($n) => ['number' => $n, 'timezone' => 'UTC'], $numbers),
+                'group'        => 'day',
+                'days'         => $days,
+                'meta'         => ['count' => count($days), 'truncated' => false],
+            ]);
+        }
 
         $planned = $this->planned($stores, $from, $to);
         $actual = $this->actual($stores, $from, $to);
@@ -85,6 +110,56 @@ class CalendarFeedController extends Controller
             'events'       => $events,
             'meta'         => ['count' => count($events), 'truncated' => false],
         ]);
+    }
+
+    /**
+     * group=day: shift_day's numbers for every store and day, counted by the
+     * database — a year of every store is far too many shifts to load. Same
+     * rules: done = someone clocked in on that planned shift (attendance in the
+     * range), missed = over with nobody clocked in, scheduled = the rest.
+     * Time off is `info` and not counted.
+     *
+     * @return list<array{store: string, date: string, counts: array<string, int>}>
+     */
+    private function days(Collection $stores, string $from, string $to): array
+    {
+        $now = Carbon::now('UTC')->format('Y-m-d H:i:s');
+        $attended = fn ($q) => $q->selectRaw('1')->from('actual_shifts as a')
+            ->whereColumn('a.shift_assignment_id', 'sa.id')
+            ->whereNull('a.deleted_at')
+            ->whereIn('a.store_id', $stores->keys())
+            ->whereBetween('a.shift_date', [$from, $to]);
+
+        $sub = $attended(DB::query());
+        $done = $sub->toSql();
+        $bindings = $sub->getBindings();
+
+        return DB::table('shift_assignments as sa')
+            ->join('shifts as s', 's.id', '=', 'sa.shift_id')
+            ->join('employees as e', 'e.id', '=', 'sa.employee_id') // as planned(): no employee, no shift
+            ->whereNull('sa.deleted_at')
+            ->whereNull('s.deleted_at')
+            ->where('sa.status', 'assigned')
+            ->whereIn('s.store_id', $stores->keys())
+            ->whereBetween('s.shift_date', [$from, $to])
+            ->groupBy('s.store_id', 's.shift_date')
+            ->orderBy('s.shift_date')->orderBy('s.store_id')
+            ->selectRaw('s.store_id, s.shift_date, COUNT(*) as total')
+            ->selectRaw("SUM(CASE WHEN EXISTS ({$done}) THEN 1 ELSE 0 END) as done", $bindings)
+            ->selectRaw("SUM(CASE WHEN NOT EXISTS ({$done}) AND s.ends_at_utc < ? THEN 1 ELSE 0 END) as missed", [...$bindings, $now])
+            ->get()
+            ->map(function ($r) use ($stores) {
+                $counts = ['done' => (int) $r->done, 'missed' => (int) $r->missed, 'scheduled' => (int) $r->total - (int) $r->done - (int) $r->missed];
+
+                return [
+                    'store'  => $stores[$r->store_id],
+                    'date'   => Carbon::parse($r->shift_date)->toDateString(),
+                    'counts' => array_filter($counts) + ['total' => (int) $r->total],
+                ];
+            })
+            ->sortBy(fn ($d) => $d['date'] . '|' . $d['store'])
+            ->values()
+            ->all();
     }
 
     /** Assigned planned shifts, one row per (shift, employee). */
