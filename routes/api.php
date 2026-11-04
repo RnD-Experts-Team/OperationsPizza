@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\ReportDatasetController;
 use App\Http\Controllers\Api\V1\ActualShiftController;
 use App\Http\Controllers\Api\V1\AvailabilityController;
 use App\Http\Controllers\Api\V1\ClockController;
@@ -13,6 +14,7 @@ use App\Http\Controllers\Api\V1\ScheduleTemplateController;
 use App\Http\Controllers\Api\V1\ShiftController;
 use App\Http\Controllers\Api\V1\SkillController;
 use App\Http\Controllers\Api\V1\TimeOffController;
+use App\Reports\ReportDatasets;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -43,6 +45,9 @@ Route::prefix('v1')->middleware(['throttle:api', 'auth.token.store'])->group(fun
     // Employees of several stores (?storeIds[]=…) against every skill. Store-less
     // like hiring's all-stores employee list; pizzasys checks each store asked for.
     Route::get('skills/overview', [EmployeeSkillController::class, 'overview'])->name('api.v1.employee-skills.overview');
+    // Unified calendar feed. Stores are in the query (stores=a,b), not the path:
+    // the pizzasys rule must read store_id_sources.query ["stores"] with policy "all".
+    Route::get('calendar/feed', \App\Http\Controllers\Api\V1\CalendarFeedController::class)->name('api.v1.calendar.feed');
 
     Route::prefix('stores/{storeId}')->group(function (): void {
         // ---- the one call that boots the whole grid -------------------------
@@ -168,3 +173,15 @@ Route::prefix('v1')->middleware(['throttle:api', 'auth.token.store'])->group(fun
 // auth rule. The general `api` limit applies, keyed on the IP (there is no bearer token).
 Route::get('v1/skills/export/csv', [EmployeeSkillController::class, 'export'])
     ->name('api.v1.employee-skills.export')->middleware(['throttle:api', 'auth.secret.key']);
+
+/*
+| The report dataset contract, the same in every service. It lives at the API
+| root, outside v1, and is verified by the same middleware: the catalog is open
+| to any signed-in user, and each dataset has its own literal query route (never
+| a {key} parameter) so pizzasys can hold one rule per dataset. The body's
+| `stores` are store codes; an empty list is a global check only.
+*/
+Route::get('report-datasets', [ReportDatasetController::class, 'catalog'])->name('api.report-datasets.catalog')->middleware(['throttle:api', 'auth.token.store']);
+foreach (ReportDatasets::DATASETS as $dataset) {
+    Route::post('report-datasets/'.$dataset::KEY.'/query', [ReportDatasetController::class, 'query'])->defaults('dataset', $dataset::KEY)->name('api.report-datasets.query.'.$dataset::KEY)->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
+}

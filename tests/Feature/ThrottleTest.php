@@ -307,7 +307,16 @@ class ThrottleTest extends TestCase
             'api.v1.employees.sync-status', 'api.v1.health',
         ], $named('throttle:api-poll'));
 
-        $this->assertSame(['api.v1.schedule.insights', 'api.v1.schedule.week'], $named('throttle:api-heavy'));
+        // The report dataset queries (at the API root) sit on the heavy tier too.
+        $this->assertSame([
+            'api.report-datasets.query.operations.actual_shifts',
+            'api.report-datasets.query.operations.availability',
+            'api.report-datasets.query.operations.clock_segments',
+            'api.report-datasets.query.operations.employee_skills',
+            'api.report-datasets.query.operations.scheduled_shifts',
+            'api.report-datasets.query.operations.time_off',
+            'api.v1.schedule.insights', 'api.v1.schedule.week',
+        ], $named('throttle:api-heavy'));
 
         // Poll routes swap the general limit for their own tier.
         $general = collect(Route::getRoutes()->getRoutes())
