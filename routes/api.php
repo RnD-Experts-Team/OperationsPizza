@@ -168,6 +168,12 @@ Route::prefix('v1')->middleware(['throttle:api', 'auth.token.store'])->group(fun
     });
 });
 
+// The skill ratings as CSV for Excel: ?start_date=&end_date=[&stores=a,b], no stores =
+// every store. A shared secret (X-Secret-Key), not a user token, so it has no pizzasys
+// auth rule. The general `api` limit applies, keyed on the IP (there is no bearer token).
+Route::get('v1/skills/export/csv', [EmployeeSkillController::class, 'export'])
+    ->name('api.v1.employee-skills.export')->middleware(['throttle:api', 'auth.secret.key']);
+
 /*
 | The report dataset contract, the same in every service. It lives at the API
 | root, outside v1, and is verified by the same middleware: the catalog is open

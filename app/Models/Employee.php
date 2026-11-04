@@ -19,8 +19,9 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * arrival rather than store an HR record we have no business holding.
  *
  * The one exception is the birth date, kept only so employee skills can warn
- * when a minor is rated on a skill with a minimum age. It is never returned by
- * the API; isMinor()/ageAtLeast() are what leave this model.
+ * when a minor is rated on a skill with a minimum age. The user-token API never
+ * returns it (isMinor()/ageAtLeast() are what leave this model); only the
+ * skills CSV export, behind the shared secret, writes it out.
  */
 class Employee extends Model
 {
