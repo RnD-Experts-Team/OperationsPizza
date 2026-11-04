@@ -54,4 +54,8 @@ return [
         'retry_ms' => 100,
     ],
 
+    // Shared secret (X-Secret-Key header) for the auth.secret.key routes, the
+    // CSV exports Excel pulls. Blank means those routes return 500.
+    'x_secret_key' => env('X_SECRET_KEY'),
+
 ];

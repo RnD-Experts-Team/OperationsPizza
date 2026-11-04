@@ -315,6 +315,11 @@ class ThrottleTest extends TestCase
             ->map(fn ($route) => $route->getName())
             ->sort()->values()->all();
 
-        $this->assertSame(array_values(array_diff($named('auth.token.store'), $named('throttle:api-poll'))), $general);
+        // The CSV export behind the shared secret has no bearer token, so it is on the general limit by IP.
+        $expected = array_diff(array_merge($named('auth.token.store'), $named('auth.secret.key')), $named('throttle:api-poll'));
+        sort($expected);
+
+        $this->assertSame(['api.v1.employee-skills.export'], $named('auth.secret.key'));
+        $this->assertSame(array_values($expected), $general);
     }
 }

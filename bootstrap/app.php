@@ -2,6 +2,7 @@
 
 use App\Exceptions\Renderers\SchedulingExceptionRenderer;
 use App\Http\Middleware\AuthTokenStoreScopeMiddleware;
+use App\Http\Middleware\CheckSecretKeyMiddleware;
 use App\Http\Middleware\ObservableThrottleRequests;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
@@ -18,6 +19,7 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->alias([
             'auth.token.store' => AuthTokenStoreScopeMiddleware::class,
+            'auth.secret.key' => CheckSecretKeyMiddleware::class,
             'throttle' => ObservableThrottleRequests::class,
         ]);
     })

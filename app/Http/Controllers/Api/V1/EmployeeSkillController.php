@@ -10,6 +10,9 @@ use App\Models\Skill;
 use App\Services\Scheduling\SkillPresenter;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 /**
@@ -104,6 +107,81 @@ class EmployeeSkillController extends Controller
         return response()->json([
             'data' => $this->presenter->overview($employees, Skill::query()->orderBy('id')->get(), $storeNumbers),
         ]);
+    }
+
+    /**
+     * The skill ratings as CSV for Excel: one row per active employee, store
+     * they belong to and skill they are rated on, with their birth date.
+     *
+     * Behind the shared secret (auth.secret.key), not a user token, so there is
+     * no caller to check against stores: `stores` (store codes, comma-separated
+     * or stores[]) narrows it, and none is every store. `start_date` and
+     * `end_date` (inclusive, UTC) keep the ratings last saved in that span,
+     * either may be left out. Skills an employee is not rated on have no row.
+     */
+    public function export(Request $request): StreamedResponse
+    {
+        $rules = [
+            'start_date' => ['nullable', 'date_format:Y-m-d'],
+            'end_date' => ['nullable', 'date_format:Y-m-d'],
+            'stores' => ['nullable'],
+        ];
+        if ($request->filled('start_date')) {
+            $rules['end_date'][] = 'after_or_equal:start_date';
+        }
+
+        // Excel asks without Accept: application/json, so a failed validate() would redirect to "/".
+        $validator = Validator::make($request->query(), $rules);
+        abort_if($validator->fails(), 422, $validator->errors()->first());
+        $filters = $validator->validated();
+
+        $stores = $filters['stores'] ?? [];
+        $storeNumbers = array_values(array_unique(array_filter(array_map(
+            'trim',
+            is_array($stores) ? $stores : explode(',', (string) $stores)
+        ))));
+
+        $rows = DB::table('employee_skills')
+            ->join('skills', 'skills.id', '=', 'employee_skills.skill_id')
+            ->join('employees', 'employees.id', '=', 'employee_skills.employee_id')
+            ->join('employee_store', 'employee_store.employee_id', '=', 'employees.id')
+            ->where('employees.active', true)
+            ->whereNull('employees.deleted_at')
+            ->when($storeNumbers !== [], fn ($query) => $query->whereIn('employee_store.store_number', $storeNumbers))
+            ->when($filters['start_date'] ?? null, fn ($query, $date) => $query->whereDate('employee_skills.updated_at', '>=', $date))
+            ->when($filters['end_date'] ?? null, fn ($query, $date) => $query->whereDate('employee_skills.updated_at', '<=', $date))
+            ->orderBy('employee_store.store_number')
+            ->orderBy('employees.first_name')
+            ->orderBy('employees.last_name')
+            ->orderBy('employees.id')
+            ->orderBy('skills.id')
+            ->select([
+                'employee_store.store_number',
+                'employees.id as employee_id',
+                'employees.first_name',
+                'employees.last_name',
+                'employees.birth_date',
+                'skills.name as skill',
+                'employee_skills.rating',
+                'employee_skills.updated_at as rated_at',
+            ]);
+
+        return response()->streamDownload(function () use ($rows) {
+            $out = fopen('php://output', 'w');
+            fputcsv($out, ['Store', 'Employee ID', 'Employee', 'Birth date', 'Skill', 'Rating', 'Rated on'], escape: '');
+            foreach ($rows->cursor() as $row) {
+                fputcsv($out, [
+                    $row->store_number,
+                    $row->employee_id,
+                    trim("{$row->first_name} {$row->last_name}"),
+                    $row->birth_date === null ? '' : substr((string) $row->birth_date, 0, 10),
+                    $row->skill,
+                    $row->rating,
+                    substr((string) $row->rated_at, 0, 10),
+                ], escape: '');
+            }
+            fclose($out);
+        }, 'employee-skills_'.now()->toDateString().'.csv', ['Content-Type' => 'text/csv; charset=UTF-8']);
     }
 
     /**
