@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\ReportDatasetController;
 use App\Http\Controllers\Api\V1\ActualShiftController;
 use App\Http\Controllers\Api\V1\AvailabilityController;
 use App\Http\Controllers\Api\V1\ClockController;
@@ -13,6 +14,7 @@ use App\Http\Controllers\Api\V1\ScheduleTemplateController;
 use App\Http\Controllers\Api\V1\ShiftController;
 use App\Http\Controllers\Api\V1\SkillController;
 use App\Http\Controllers\Api\V1\TimeOffController;
+use App\Reports\ReportDatasets;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -165,3 +167,15 @@ Route::prefix('v1')->middleware(['throttle:api', 'auth.token.store'])->group(fun
         Route::post('employees/{employeeId}/humanity-sync', [EmployeeSyncController::class, 'request'])->whereNumber('employeeId')->middleware('throttle:external-fanout')->name('api.v1.employees.humanity-sync');
     });
 });
+
+/*
+| The report dataset contract, the same in every service. It lives at the API
+| root, outside v1, and is verified by the same middleware: the catalog is open
+| to any signed-in user, and each dataset has its own literal query route (never
+| a {key} parameter) so pizzasys can hold one rule per dataset. The body's
+| `stores` are store codes; an empty list is a global check only.
+*/
+Route::get('report-datasets', [ReportDatasetController::class, 'catalog'])->name('api.report-datasets.catalog')->middleware(['throttle:api', 'auth.token.store']);
+foreach (ReportDatasets::DATASETS as $dataset) {
+    Route::post('report-datasets/'.$dataset::KEY.'/query', [ReportDatasetController::class, 'query'])->defaults('dataset', $dataset::KEY)->name('api.report-datasets.query.'.$dataset::KEY)->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
+}
