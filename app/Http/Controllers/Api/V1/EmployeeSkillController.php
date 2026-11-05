@@ -88,7 +88,7 @@ class EmployeeSkillController extends Controller
     public function overview(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'storeIds' => ['sometimes', 'array', 'max:100'],
+            'storeIds' => ['sometimes', 'array'],
             'storeIds.*' => ['string', 'max:20'],
         ]);
         $storeNumbers = array_values(array_unique($validated['storeIds'] ?? []));
