@@ -26,8 +26,9 @@ return [
      | and clock in as the store's "Crew Member". When the full label matches
      | nothing, the lookups retry with one of these trailing " - <suffix>"
      | parts removed (App\Support\PositionLabel). Comma-separated,
-     | case-insensitive. Same list as HiringPizza's TCP_POSITION_VARIANT_SUFFIXES.
+     | case-insensitive. Same env variable as HiringPizza, so one setting drives
+     | both: the Humanity shift lookup, TCP clock-ins, and HiringPizza's TCP push.
      */
     'position_variant_suffixes' => array_values(array_filter(array_map('trim',
-        explode(',', (string) env('POSITION_VARIANT_SUFFIXES', 'AT,Management Trainee'))))),
+        explode(',', (string) env('TCP_POSITION_VARIANT_SUFFIXES', 'AT,Management Trainee'))))),
 ];
