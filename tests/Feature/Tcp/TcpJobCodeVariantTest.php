@@ -50,7 +50,7 @@ class TcpJobCodeVariantTest extends TestCase
 
     public function test_any_suffix_listed_in_the_env_falls_back_to_its_base(): void
     {
-        // The list comes from POSITION_VARIANT_SUFFIXES — whatever endings are
+        // The list comes from TCP_POSITION_VARIANT_SUFFIXES — whatever endings are
         // listed there, not just AT.
         config(['operations.position_variant_suffixes' => ['AT', 'Management Trainee', 'Weekend']]);
 
