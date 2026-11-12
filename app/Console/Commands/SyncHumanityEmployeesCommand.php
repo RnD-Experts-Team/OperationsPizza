@@ -84,8 +84,20 @@ class SyncHumanityEmployeesCommand extends Command
             ])->save();
         }
 
+        // Active employees only: an inactive one is never scheduled, so its
+        // missing link is not worth chasing.
         $stillUnlinked = Employee::query()
+            ->where('active', true)
             ->whereNotNull('tcp_employee_id')
+            ->whereNull('humanity_employee_id')
+            ->count();
+
+        // The other half of "Setting up": no TCP id at all, so nothing here
+        // can link them — HiringPizza has to push them (or tcp:link-employees
+        // there has to find them) first.
+        $noTcpId = Employee::query()
+            ->where('active', true)
+            ->whereNull('tcp_employee_id')
             ->whereNull('humanity_employee_id')
             ->count();
 
@@ -93,7 +105,8 @@ class SyncHumanityEmployeesCommand extends Command
             ['already linked', $already],
             [$dryRun ? 'would link' : 'newly linked', $linked],
             ['Humanity records matching nobody', count($unmatchedRemote)],
-            ['local employees with TCP id but no Humanity id' . ($dryRun ? ' (before)' : ''), $stillUnlinked],
+            ['active employees with TCP id but no Humanity id' . ($dryRun ? ' (before)' : ''), $stillUnlinked],
+            ['active employees with no TCP id (fix in HiringPizza)', $noTcpId],
         ]);
 
         foreach (array_slice($unmatchedRemote, 0, 20) as $line) {

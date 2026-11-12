@@ -49,19 +49,37 @@ Schedule::command('humanity:sync-leave')
     ->skip(fn () => config('humanity.driver') !== 'http');
 
 /*
- | NOT scheduled, deliberately: `tcp:sync-catalog` and `humanity:sync-catalog`.
+ | Catalog sync: keeps the positions and job codes we match against in step
+ | with Humanity and TCP, so a position or job code someone adds there is
+ | picked up without anyone remembering to run a command.
  |
- | Both mirror catalogs — TCP locations/job codes, Humanity locations/positions
- | — that only change when a human does something rare and deliberate: opening a
- | store, defining a job code, adding a position. Neither vendor has a webhook,
- | so polling was the only way to notice, and a daily poll for an event that
- | happens a few times a year is noise that also has to be reasoned about every
- | time the TCP quota is reviewed.
+ | These used to be manual-only, on the grounds that catalogs change a few
+ | times a year. In practice the gap showed up as shifts failing with
+ | POSITION_NOT_MAPPED for people whose position nobody had mapped yet, so
+ | they now run on their own. Both are cheap: Humanity's locations/positions
+ | are its only resources with a real delta filter (2 calls a run), and the
+ | TCP catalog is ~3 calls a day against the 2500/day quota.
  |
- | Run them by hand as part of onboarding instead:
- |     php artisan tcp:sync-catalog --check
- |     php artisan humanity:sync-catalog --full --auto-map
+ | The auto-map after the Humanity sync is local only (no Humanity calls). It
+ | maps every roster label it can match, never overwrites a hand-made mapping,
+ | and never touches a store's default; anything ambiguous makes it exit
+ | non-zero so the failure shows in the scheduler log. HumanityPositionResolver
+ | also maps a label the first time a shift needs it, so this mostly keeps
+ | `humanity:map-position --list` honest and surfaces the gaps.
  */
+Schedule::command('humanity:sync-catalog')
+    ->hourlyAt(15)
+    ->withoutOverlapping()
+    ->skip(fn () => config('humanity.driver') !== 'http');
+
+Schedule::command('humanity:map-position --auto-map')
+    ->hourlyAt(20)
+    ->withoutOverlapping();
+
+Schedule::command('tcp:sync-catalog')
+    ->dailyAt('04:00')
+    ->withoutOverlapping()
+    ->skip(fn () => config('tcp.driver') !== 'http');
 
 // TCP Manager+ worked hours -> actual_shifts. Incremental via TCP's updatedOn
 // delta filter, so each run costs a handful of calls rather than re-reading the
