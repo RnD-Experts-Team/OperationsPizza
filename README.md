@@ -171,13 +171,13 @@ php artisan schedule:work
 |---|---|
 | `nats:consume` | Long-running JetStream consumer (auth + hiring events). |
 | `outbox:publish-pending` | Sweeper for the transactional outbox. Scheduled every 5 min. |
-| `humanity:sync-catalog` | Pulls Humanity locations + positions into the mapping tables. `--auto-map` matches stores by name. |
+| `humanity:sync-catalog` | Pulls Humanity locations + positions into the mapping tables. `--auto-map` matches stores by name. Scheduled hourly (delta, 2 calls). |
 | `humanity:map-location` | Binds a store to a Humanity location. **Required** — store numbers never match Humanity's location names, so nothing is inferred at runtime. `--list` shows both sides. |
-| `humanity:map-position` | Maps a position to a Humanity position for a store. **A `--default` row is mandatory** or every shift create fails `POSITION_NOT_MAPPED`. |
+| `humanity:map-position` | Maps a position to a Humanity position for a store. `--auto-map` (scheduled hourly, local only) maps every roster label it can match by name, preferring the position named for the store; a label with a variant suffix (`POSITION_VARIANT_SUFFIXES`, default `AT`) falls back to its base ("Crew Member - AT" -> "Crew Member"). The shift writer also maps a label the first time it needs one. Without a match and without a `--default` row, the shift create fails `POSITION_NOT_MAPPED`. |
 | `humanity:reconcile` | Reconciles our shift mirror against Humanity. **Always `--dry-run` first and read the per-shift diff it prints.** Non-dry-run asks for confirmation (`--force` for cron). |
 | `humanity:sync-leave` | Mirrors Humanity leave into `time_off`. `--dry-run` supported. |
 | `humanity:sync-employees` | READ-ONLY: links local employees to Humanity records by TCP id (`eid` / username prefix). This is how `humanity_employee_id` gets populated. |
-| `tcp:sync-catalog` | Binds stores to TCP locations by name and mirrors the job-code catalog. `--check` for report-only. |
+| `tcp:sync-catalog` | Binds stores to TCP locations by name and mirrors the job-code catalog. `--check` for report-only. Scheduled daily at 04:00 (~3 TCP calls). |
 | `tcp:sync-worksegments` | TCP worked hours → `tcp_work_segments` → rolled up into `actual_shifts`. Delta-driven. `--dry-run` supported. |
 | `tcp:reconcile-worksegments` | Nightly truth pass. Re-reads the window ignoring the cursor and the changes gate, retires segments TCP no longer has, and reports people TCP says work here that we have no link for. `--dry-run`, `--days`, `--store`. |
 | `tcp:inspect-employees` | Read-only: TCP roster vs our links, coverage report. |

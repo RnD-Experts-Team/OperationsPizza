@@ -19,4 +19,15 @@ return [
     'store_timezones' => [
         // '03759-00001' => 'America/New_York',
     ],
+
+    /*
+     | Dashboard positions can carry a variant suffix that neither Humanity's
+     | positions nor TCP's job codes have: "Crew Member - AT" should schedule
+     | and clock in as the store's "Crew Member". When the full label matches
+     | nothing, the lookups retry with one of these trailing " - <suffix>"
+     | parts removed (App\Support\PositionLabel). Comma-separated,
+     | case-insensitive. Same list as HiringPizza's TCP_POSITION_VARIANT_SUFFIXES.
+     */
+    'position_variant_suffixes' => array_values(array_filter(array_map('trim',
+        explode(',', (string) env('POSITION_VARIANT_SUFFIXES', 'AT,Management Trainee'))))),
 ];

@@ -33,7 +33,9 @@ class SchedulingException extends RuntimeException
     public static function positionNotMapped(string $storeNumber, ?string $positionLabel): self
     {
         return new self(
-            'No Humanity position is mapped for this shift, and the store has no default.',
+            filled($positionLabel)
+                ? "No Humanity position matches '{$positionLabel}' at store {$storeNumber}, and the store has no default."
+                : 'No Humanity position is mapped for this shift, and the store has no default.',
             'POSITION_NOT_MAPPED',
             422,
             ['store_number' => $storeNumber, 'position_label' => $positionLabel],

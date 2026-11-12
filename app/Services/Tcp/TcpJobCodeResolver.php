@@ -6,6 +6,7 @@ use App\Models\Employee;
 use App\Models\Store;
 use App\Models\TcpJobCode;
 use App\Services\Scheduling\Exceptions\SchedulingException;
+use App\Support\PositionLabel;
 
 /**
  * Which TCP job code a punch belongs to.
@@ -37,13 +38,25 @@ class TcpJobCodeResolver
             $employee?->position_label,
         ], fn ($value) => filled($value))));
 
+        // Each label as-is, then without its variant suffix: "Crew Member -
+        // AT" has no TCP code of its own and clocks in as "Crew Member".
+        $names = [];
+
+        foreach ($labels as $value) {
+            foreach (PositionLabel::candidates($value) as $name) {
+                $names[] = $name;
+            }
+        }
+
+        $names = array_values(array_unique($names));
+
         $storeCodes = TcpJobCode::query()
             ->where('store_number', (string) $store->store_number)
             ->where('clockable', true)
             ->where('is_active', true)
             ->get();
 
-        foreach ($labels as $candidate) {
+        foreach ($names as $candidate) {
             $match = $storeCodes->first(
                 fn (TcpJobCode $code) => stripos($code->description, $candidate) === 0
             );
