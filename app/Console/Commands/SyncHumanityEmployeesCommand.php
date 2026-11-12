@@ -90,7 +90,8 @@ class SyncHumanityEmployeesCommand extends Command
             ->where('active', true)
             ->whereNotNull('tcp_employee_id')
             ->whereNull('humanity_employee_id')
-            ->count();
+            ->orderBy('last_name')
+            ->get();
 
         // The other half of "Setting up": no TCP id at all, so nothing here
         // can link them — HiringPizza has to push them (or tcp:link-employees
@@ -99,15 +100,28 @@ class SyncHumanityEmployeesCommand extends Command
             ->where('active', true)
             ->whereNull('tcp_employee_id')
             ->whereNull('humanity_employee_id')
-            ->count();
+            ->orderBy('last_name')
+            ->get();
 
         $this->table(['metric', 'count'], [
             ['already linked', $already],
             [$dryRun ? 'would link' : 'newly linked', $linked],
             ['Humanity records matching nobody', count($unmatchedRemote)],
-            ['active employees with TCP id but no Humanity id' . ($dryRun ? ' (before)' : ''), $stillUnlinked],
-            ['active employees with no TCP id (fix in HiringPizza)', $noTcpId],
+            ['active employees with TCP id but no Humanity id' . ($dryRun ? ' (before)' : ''), $stillUnlinked->count()],
+            ['active employees with no TCP id (fix in HiringPizza)', $noTcpId->count()],
         ]);
+
+        // Named, because these are exactly the people the dashboard shows as
+        // "Setting up" — a count alone sends someone digging.
+        $name = fn (Employee $e) => trim("{$e->first_name} {$e->last_name}");
+
+        foreach ($stillUnlinked as $employee) {
+            $this->line("  No Humanity record with eid {$employee->tcp_employee_id}: employee {$employee->id} {$name($employee)}");
+        }
+
+        foreach ($noTcpId as $employee) {
+            $this->line("  No TCP id yet: employee {$employee->id} {$name($employee)} (run tcp:link-employees in HiringPizza)");
+        }
 
         foreach (array_slice($unmatchedRemote, 0, 20) as $line) {
             $this->line("  Unmatched in Humanity: {$line}");
