@@ -74,7 +74,7 @@ class HumanityShiftReconciler
 
         $remote = [];
 
-        foreach ($this->humanity->listShifts($locationId, $from, $to) as $shift) {
+        foreach ($this->humanity->listShifts($locationId, $from, $to, $timezone) as $shift) {
             if ($shift->shiftId !== '') {
                 $remote[$shift->shiftId] = $shift;
             }
@@ -191,7 +191,7 @@ class HumanityShiftReconciler
         // may simply be stale. One targeted GET settles it and closes the
         // reconciler-vs-user-edit race for the handful of contended rows.
         if ($localShift->updated_at !== null && $localShift->updated_at->gt($snapshotAt)) {
-            $fresh = $this->humanity->getShift((string) $localShift->humanity_shift_id);
+            $fresh = $this->humanity->getShift((string) $localShift->humanity_shift_id, $timezone);
 
             if ($fresh !== null) {
                 $remote = $fresh;

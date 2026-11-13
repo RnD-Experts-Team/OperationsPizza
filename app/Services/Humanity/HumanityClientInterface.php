@@ -59,16 +59,22 @@ interface HumanityClientInterface
      * There is no pagination on shifts and no `updated_at` filter, so callers
      * slice by date instead.
      *
+     * $timezone is the store's (StoreTimezoneResolver): Humanity returns shift
+     * dates as Unix timestamps, and the local date of an evening shift's end
+     * differs from its UTC date. Reading them in UTC put the end a day late.
+     *
      * @return array<int, HumanityShiftResult>
      */
     public function listShifts(
         string $locationId,
         DateTimeInterface $from,
         DateTimeInterface $to,
+        string $timezone,
         ?string $positionId = null
     ): array;
 
-    public function getShift(string $humanityShiftId): ?HumanityShiftResult;
+    /** $timezone: see listShifts(). */
+    public function getShift(string $humanityShiftId, string $timezone): ?HumanityShiftResult;
 
     public function createShift(HumanityShiftPayload $payload): HumanityShiftResult;
 
