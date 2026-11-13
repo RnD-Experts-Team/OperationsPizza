@@ -130,6 +130,7 @@ class HumanityHttpClient implements HumanityClientInterface
         string $locationId,
         DateTimeInterface $from,
         DateTimeInterface $to,
+        string $timezone,
         ?string $positionId = null
     ): array {
         // mode drives which filters Humanity honours, and a filter passed in
@@ -149,12 +150,12 @@ class HumanityHttpClient implements HumanityClientInterface
         $rows = $this->get('shifts', $query, 'list shifts');
 
         return array_values(array_filter(array_map(
-            fn ($row) => is_array($row) ? $this->toShiftResult($row) : null,
+            fn ($row) => is_array($row) ? $this->toShiftResult($row, $timezone) : null,
             $rows
         )));
     }
 
-    public function getShift(string $humanityShiftId): ?HumanityShiftResult
+    public function getShift(string $humanityShiftId, string $timezone): ?HumanityShiftResult
     {
         $data = $this->get("shifts/{$humanityShiftId}", [], 'get shift', allowMissing: true, singleObject: true);
 
@@ -164,7 +165,7 @@ class HumanityHttpClient implements HumanityClientInterface
 
         $row = $this->firstRow($data);
 
-        return $row === null ? null : $this->toShiftResult($row);
+        return $row === null ? null : $this->toShiftResult($row, $timezone);
     }
 
     public function createShift(HumanityShiftPayload $payload): HumanityShiftResult
@@ -210,7 +211,7 @@ class HumanityHttpClient implements HumanityClientInterface
         // is resolved by the caller's read-back probe, not by retrying blind.
         $data = $this->post('shifts', $body, 'create shift', singleObject: true);
 
-        return $this->requireShiftResult($data, 'create shift');
+        return $this->requireShiftResult($data, 'create shift', $payload->startsLocal->getTimezone()->getName());
     }
 
     public function updateShift(string $humanityShiftId, HumanityShiftPayload $payload): HumanityShiftResult
@@ -251,7 +252,7 @@ class HumanityHttpClient implements HumanityClientInterface
 
         $data = $this->put("shifts/{$humanityShiftId}", $body, 'update shift', singleObject: true);
 
-        return $this->requireShiftResult($data, 'update shift', $humanityShiftId);
+        return $this->requireShiftResult($data, 'update shift', $payload->startsLocal->getTimezone()->getName(), $humanityShiftId);
     }
 
     public function deleteShift(string $humanityShiftId): void
@@ -273,7 +274,7 @@ class HumanityHttpClient implements HumanityClientInterface
             'update_staff' => 1,
         ], 'assign employees', singleObject: true);
 
-        return $this->requireShiftResult($data, 'assign employees', $humanityShiftId);
+        return $this->requireShiftResult($data, 'assign employees', $this->assignmentTimezone(), $humanityShiftId);
     }
 
     public function unassignEmployees(string $humanityShiftId, array $humanityEmployeeIds): HumanityShiftResult
@@ -285,7 +286,7 @@ class HumanityHttpClient implements HumanityClientInterface
             'update_staff' => 1,
         ], 'unassign employees', singleObject: true);
 
-        return $this->requireShiftResult($data, 'unassign employees', $humanityShiftId);
+        return $this->requireShiftResult($data, 'unassign employees', $this->assignmentTimezone(), $humanityShiftId);
     }
 
     // ------------------------------------------------------- leave & timeclock
@@ -485,13 +486,22 @@ class HumanityHttpClient implements HumanityClientInterface
         return is_array($first) ? $first : null;
     }
 
-    private function requireShiftResult(array $data, string $context, ?string $fallbackId = null): HumanityShiftResult
+    /**
+     * Assignment calls carry no store, and their callers read only the shift
+     * id from the result, so the configured default zone is enough here.
+     */
+    private function assignmentTimezone(): string
+    {
+        return (string) config('operations.default_timezone', 'UTC');
+    }
+
+    private function requireShiftResult(array $data, string $context, string $timezone, ?string $fallbackId = null): HumanityShiftResult
     {
         $row = $this->firstRow($data);
 
         if ($row === null) {
             if ($fallbackId !== null) {
-                $existing = $this->getShift($fallbackId);
+                $existing = $this->getShift($fallbackId, $timezone);
 
                 if ($existing !== null) {
                     return $existing;
@@ -501,10 +511,17 @@ class HumanityHttpClient implements HumanityClientInterface
             throw new HumanityException("Humanity {$context} returned no shift payload.");
         }
 
-        return $this->toShiftResult($row);
+        return $this->toShiftResult($row, $timezone);
     }
 
-    private function toShiftResult(array $row): HumanityShiftResult
+    /**
+     * Dates and times come back in the store's local wall-clock, matching what
+     * createShift()/updateShift() sent. Humanity's date objects carry a Unix
+     * timestamp, so formatting them in UTC moved any shift edge after UTC
+     * midnight (6 PM Central in winter) onto the next day: a 4-8 PM shift was
+     * read back as ending 8 PM the following day, 28 hours long.
+     */
+    private function toShiftResult(array $row, string $timezone): HumanityShiftResult
     {
         $employees = [];
 
@@ -524,10 +541,10 @@ class HumanityHttpClient implements HumanityClientInterface
             shiftId: (string) ($this->stringId($row, ['id', 'shift_id']) ?? ''),
             positionId: $this->nullableString($row['schedule'] ?? $row['position_id'] ?? null),
             locationId: $this->nullableString($row['location'] ?? $row['location_id'] ?? null),
-            startDate: $this->dateOnly($row['start_date'] ?? $row['start'] ?? null),
-            startTime: $this->timeOnly($row['start_time'] ?? $row['start'] ?? null),
-            endDate: $this->dateOnly($row['end_date'] ?? $row['end'] ?? null),
-            endTime: $this->timeOnly($row['end_time'] ?? $row['end'] ?? null),
+            startDate: $this->dateOnly($row['start_date'] ?? $row['start'] ?? null, $timezone),
+            startTime: $this->timeOnly($row['start_time'] ?? $row['start'] ?? null, $timezone),
+            endDate: $this->dateOnly($row['end_date'] ?? $row['end'] ?? null, $timezone),
+            endTime: $this->timeOnly($row['end_time'] ?? $row['end'] ?? null, $timezone),
             employeeIds: $employees,
             title: $this->nullableString($row['title'] ?? null),
             note: $this->nullableString($row['notes'] ?? $row['note'] ?? null),
@@ -537,18 +554,18 @@ class HumanityHttpClient implements HumanityClientInterface
         );
     }
 
-    private function dateOnly(mixed $value): ?string
+    private function dateOnly(mixed $value, string $timezone): ?string
     {
-        return $this->dates->parse($value)?->format('Y-m-d');
+        return $this->dates->parse($value, $timezone)?->setTimezone($timezone)->format('Y-m-d');
     }
 
-    private function timeOnly(mixed $value): ?string
+    private function timeOnly(mixed $value, string $timezone): ?string
     {
         if (is_string($value) && preg_match('/^\d{1,2}:\d{2}/', $value)) {
             return substr(str_pad($value, 5, '0', STR_PAD_LEFT), 0, 5);
         }
 
-        return $this->dates->parse($value)?->format('H:i');
+        return $this->dates->parse($value, $timezone)?->setTimezone($timezone)->format('H:i');
     }
 
     private function stringId(array $row, array $keys): ?string

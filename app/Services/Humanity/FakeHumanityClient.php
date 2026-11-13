@@ -141,6 +141,7 @@ class FakeHumanityClient implements HumanityClientInterface
         string $locationId,
         DateTimeInterface $from,
         DateTimeInterface $to,
+        string $timezone,
         ?string $positionId = null
     ): array {
         $this->guard('listShifts');
@@ -163,7 +164,7 @@ class FakeHumanityClient implements HumanityClientInterface
         }));
     }
 
-    public function getShift(string $humanityShiftId): ?HumanityShiftResult
+    public function getShift(string $humanityShiftId, string $timezone): ?HumanityShiftResult
     {
         $this->guard('getShift');
 
